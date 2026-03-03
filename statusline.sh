@@ -36,6 +36,7 @@ SESSION_SHORT="${SESSION_ID:0:7}"
 IN_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_input_tokens // 0')
 OUT_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_output_tokens // 0')
 EXCEEDS_200K=$(echo "$INPUT" | jq -r '.exceeds_200k_tokens // false')
+CACHE_READ_TOKENS=$(echo "$INPUT" | jq -r '.context_window.cache_read_input_tokens // 0')
 CTX_WIN_SIZE=$(echo "$INPUT" | jq -r '.context_window.context_window_size // 200000')
 if (( CTX_WIN_SIZE >= 1000000 )); then CTX_WIN_LABEL="1M"; else CTX_WIN_LABEL="200K"; fi
 
@@ -52,7 +53,7 @@ else
   AUTH_TAG="Max"
 fi
 
-# ─── Cornell model rate detection ────────────────────────────────────────────
+# ─── Gateway model rate detection ─────────────────────────────────────────────
 # GW_TIERED=true means rates double when input tokens/request exceed 200k
 # Rates: $/1M tokens. T1=normal, T2=over 200k input threshold.
 GW_TIERED=false
@@ -240,7 +241,7 @@ for ((i=0; i<FILLED; i++)); do BAR_FILL+="●"; done
 for ((i=0; i<EMPTY; i++)); do BAR_EMPTY+="○"; done
 CTX_BAR="${BAR_COLOR}${BAR_FILL}${DIM}${BAR_EMPTY}${RESET}"
 
-# ─── Cornell tier annotation ─────────────────────────────────────────────────
+# ─── Gateway tier annotation ──────────────────────────────────────────────────
 # Shows T1/T2 tier label + input/output rates on the CONTEXT row for gateway sessions.
 # T2 triggers on exceeds_200k_tokens boolean from session JSON (per-request signal).
 CTX_TIER=""
@@ -254,15 +255,25 @@ if [[ "$AUTH_TAG" == GW:* ]] && [[ -n "$GW_RATE_IN" ]]; then
   fi
 fi
 
+# ─── Cache read tokens (Anthropic prompt cache) ─────────────────────────────
+# Shows when > 0. Currently 0 because DISABLE_PROMPT_CACHING=1 is set in most
+# gateway configs. Will activate automatically when prompt caching is enabled.
+CTX_CACHE=""
+if (( CACHE_READ_TOKENS > 0 )); then
+  CACHE_FMT=$(fmt_tokens "$CACHE_READ_TOKENS")
+  CTX_CACHE="${PIPE}${BGREEN}⚡${CACHE_FMT} cached${RESET}"
+fi
+
 # ─── Cost display ─────────────────────────────────────────────────────────────
-# Direct API key: show exact cost in magenta (Claude Code calculates from Anthropic rates)
-# Cornell gateway (GW:*): show as estimate (~$) in yellow — Claude Code still calculates
-#   cost client-side using Anthropic rates, but actual Cornell charge is cloud vendor
-#   pass-through + $0.002/request surcharge. Value is directionally useful, not exact.
+# Direct API key: show cost in magenta (Claude Code calculates from Anthropic rates)
+# Gateway (GW:*): don't show a dollar amount — Claude Code calculates cost using
+#   Anthropic retail rates, but gateway billing uses different vendor pass-through
+#   rates + per-request surcharges, and gateway response caching means some
+#   requests cost $0 upstream. Show billing pointer instead.
 # No ANTHROPIC_API_KEY (Max/OAuth): no cost field available, show nothing.
 COST_PART=""
 if [[ "$AUTH_TAG" == GW:* ]]; then
-  COST_PART="${PIPE}${BYELLOW}~$(printf '$%.4f' "$COST") est${RESET}"
+  COST_PART="${PIPE}${DIM}💰 billing: gateway UI${RESET}"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   COST_PART="${PIPE}${BMAGENTA}$(printf '$%.4f' "$COST")${RESET}"
 fi
@@ -295,6 +306,6 @@ SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-$
 echo -e "${DIM}─── ${RESET}${BCYAN}| CC STATUSLINE |${RESET}${DIM} ────────────────────────────────────────────────────${RESET}"
 echo -e "${BCYAN}◉ LOC:${RESET} ${BWHITE}${WX_CITY}${RESET}${PIPE}${BYELLOW}${TIME_NOW}${RESET}${PIPE}${WHITE}${DATE_NOW}${RESET}${PIPE}${WHITE}${WX_ICON}  ${WX_TEMP}°F · ${WX_WIND}mph${RESET}"
 echo -e "${BCYAN}▲ ENV:${RESET} CC: ${WHITE}v${VERSION}${RESET}${PIPE}${BGREEN}${AUTH_TAG}${RESET}${PIPE}${BCYAN}${MODEL}${RESET}"
-echo -e "${BBLUE}● CONTEXT:${RESET} ${CTX_BAR} ${BYELLOW}${PCT}% used${RESET}${PIPE}${DIM}${CTX_WIN_LABEL} ctx${RESET}${PIPE}${CYAN}In:${IN_FMT}  Out:${OUT_FMT}${RESET}${CTX_TIER}"
+echo -e "${BBLUE}● CONTEXT:${RESET} ${CTX_BAR} ${BYELLOW}${PCT}% used${RESET}${PIPE}${DIM}${CTX_WIN_LABEL} ctx${RESET}${PIPE}${CYAN}In:${IN_FMT}  Out:${OUT_FMT}${RESET}${CTX_CACHE}${CTX_TIER}"
 echo -e "$GIT_ROW"
 echo -e "$SESSION_ROW"

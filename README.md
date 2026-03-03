@@ -10,7 +10,7 @@ LOC: Ithaca | 5:02p | Sun Mar 01 | ⛅  25°F · 10mph
 ENV: CC: v2.1.63 | GW:cornell | anthropic.claude-4.6-sonnet
 ● CONTEXT: ●●●●●○○○○○○○○○○○○○○○○○○○ 23% used | In:3.4M  Out:21.0k | T1 $3/$15
 ◆ GIT: ai-cli-workspace | Branch: main | ↑1 ↓0 | clean
-+ SESSION: +30 -5 lines | Dur 37m54s | #476c2e1 | 🔋 30% | ~$10.52 est
++ SESSION: +30 -5 lines | Dur 37m54s | #476c2e1 | 🔋 30% | 💰 billing: gateway UI
 ```
 
 ## Requirements
@@ -63,7 +63,7 @@ Start a new Claude Code session — the statusline appears automatically.
 | ENV | Claude Code version, auth method, active model |
 | CONTEXT | Context window fill bar, % used, cumulative token counts |
 | GIT | Project name, branch, ahead/behind remote, modified file count |
-| SESSION | Lines added/removed, session duration, session ID, battery, cost |
+| SESSION | Lines added/removed, session duration, session ID, battery, cost (API key) or billing pointer (gateway) |
 
 ### Auth display
 
@@ -113,6 +113,17 @@ export ANTHROPIC_API_KEY="your-gateway-key"
 
 The `AUTH_TAG` in the ENV row will show `GW:<hostname>` when a gateway is
 detected (e.g. `GW:cornell`, `GW:mycompany`).
+
+### Gateway billing & caching
+
+When connected via an API gateway, the statusline does not show a dollar cost.
+Gateway billing uses different rates than what Claude Code calculates internally,
+and gateway response caching means some requests may cost nothing upstream. Instead,
+the SESSION row shows a pointer to check your gateway's billing dashboard.
+
+If Anthropic prompt caching is active, the CONTEXT row will show cached token
+counts (e.g. `⚡30.0k cached`). This requires the gateway to pass through
+Anthropic's `cache_control` headers — check with your gateway admin.
 
 ## Data sources
 
