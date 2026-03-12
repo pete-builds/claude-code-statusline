@@ -108,9 +108,15 @@ else
   echo "${BRANCH}|${AHEAD}|${BEHIND}|${MODIFIED}" > "$GIT_CACHE"
 fi
 
-# ─── Location via ipapi.co (HTTPS, cached 1hr) ───────────────────────────────
+# ─── Location via ipapi.co (HTTPS, cached 1hr, refresh on network/IP change) ─────
 LOCATION_CACHE="${CACHE_DIR}/location"
-if cache_fresh "$LOCATION_CACHE" 3600; then
+IP_CACHE="${CACHE_DIR}/location_ip"
+CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+CACHED_IP=""
+[[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+
+# Refresh if cache stale OR public IP changed (helps travel/hotspot session resumes)
+if cache_fresh "$LOCATION_CACHE" 3600 && [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" == "$CACHED_IP" ]]; then
   IFS='|' read -r WX_LAT WX_LON WX_CITY < "$LOCATION_CACHE"
 else
   LOC_JSON=$(curl -s "https://ipapi.co/json/" --max-time 4 2>/dev/null)
@@ -119,6 +125,7 @@ else
     WX_LON=$(echo "$LOC_JSON" | jq -r '.longitude')
     WX_CITY=$(echo "$LOC_JSON" | jq -r '.city')
     echo "${WX_LAT}|${WX_LON}|${WX_CITY}" > "$LOCATION_CACHE"
+    [[ -n "$CURRENT_IP" ]] && echo "$CURRENT_IP" > "$IP_CACHE"
   else
     WX_LAT="42.44"; WX_LON="-76.50"; WX_CITY="Ithaca"
   fi
