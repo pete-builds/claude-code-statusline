@@ -36,8 +36,16 @@ SESSION_SHORT="${SESSION_ID:0:7}"
 IN_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_input_tokens // 0')
 OUT_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_output_tokens // 0')
 EXCEEDS_200K=$(echo "$INPUT" | jq -r '.exceeds_200k_tokens // false')
-CTX_WIN_SIZE=$(echo "$INPUT" | jq -r '.context_window.context_window_size // 200000')
-if (( CTX_WIN_SIZE >= 1000000 )); then CTX_WIN_LABEL="1M"; else CTX_WIN_LABEL="200K"; fi
+CTX_WIN_SIZE=$(echo "$INPUT" | jq -r '.context_window.context_window_size // 0')
+if (( CTX_WIN_SIZE >= 1000000 )); then
+  CTX_WIN_LABEL="1M"
+elif (( CTX_WIN_SIZE > 0 )); then
+  CTX_WIN_LABEL="200K"
+elif [[ "$MODEL" == *[Oo]pus* ]]; then
+  CTX_WIN_LABEL="1M"
+else
+  CTX_WIN_LABEL="200K"
+fi
 
 WORK_DIR="${PROJ_DIR:-$CWD}"
 PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
