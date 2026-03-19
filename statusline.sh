@@ -35,17 +35,8 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
 SESSION_SHORT="${SESSION_ID:0:7}"
 IN_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_input_tokens // 0')
 OUT_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_output_tokens // 0')
+API_MS=$(echo "$INPUT" | jq -r '.cost.total_api_duration_ms // 0')
 EXCEEDS_200K=$(echo "$INPUT" | jq -r '.exceeds_200k_tokens // false')
-CTX_WIN_SIZE=$(echo "$INPUT" | jq -r '.context_window.context_window_size // 0')
-if (( CTX_WIN_SIZE >= 1000000 )); then
-  CTX_WIN_LABEL="1M"
-elif (( CTX_WIN_SIZE > 0 )); then
-  CTX_WIN_LABEL="200K"
-elif [[ "$MODEL" == *[Oo]pus* ]]; then
-  CTX_WIN_LABEL="1M"
-else
-  CTX_WIN_LABEL="200K"
-fi
 
 WORK_DIR="${PROJ_DIR:-$CWD}"
 PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
@@ -55,9 +46,9 @@ if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
   GW_HOST=$(echo "$ANTHROPIC_BASE_URL" | sed -E 's|https?://||; s|/.*||' | awk -F. '{print $(NF-1)}')
   AUTH_TAG="GW:${GW_HOST}"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  AUTH_TAG="Key:..${ANTHROPIC_API_KEY: -4}"
+  AUTH_TAG="API:..${ANTHROPIC_API_KEY: -4}"
 else
-  AUTH_TAG="Max"
+  AUTH_TAG="OAuth"
 fi
 
 # ─── Cornell model rate detection ────────────────────────────────────────────
@@ -116,15 +107,9 @@ else
   echo "${BRANCH}|${AHEAD}|${BEHIND}|${MODIFIED}" > "$GIT_CACHE"
 fi
 
-# ─── Location via ipapi.co (HTTPS, cached 1hr, refresh on network/IP change) ─────
+# ─── Location via ipapi.co (HTTPS, cached 1hr) ───────────────────────────────
 LOCATION_CACHE="${CACHE_DIR}/location"
-IP_CACHE="${CACHE_DIR}/location_ip"
-CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
-CACHED_IP=""
-[[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
-
-# Refresh if cache stale OR public IP changed (helps travel/hotspot session resumes)
-if cache_fresh "$LOCATION_CACHE" 3600 && [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" == "$CACHED_IP" ]]; then
+if cache_fresh "$LOCATION_CACHE" 3600; then
   IFS='|' read -r WX_LAT WX_LON WX_CITY < "$LOCATION_CACHE"
 else
   LOC_JSON=$(curl -s "https://ipapi.co/json/" --max-time 4 2>/dev/null)
@@ -133,50 +118,46 @@ else
     WX_LON=$(echo "$LOC_JSON" | jq -r '.longitude')
     WX_CITY=$(echo "$LOC_JSON" | jq -r '.city')
     echo "${WX_LAT}|${WX_LON}|${WX_CITY}" > "$LOCATION_CACHE"
-    [[ -n "$CURRENT_IP" ]] && echo "$CURRENT_IP" > "$IP_CACHE"
   else
     WX_LAT="42.44"; WX_LON="-76.50"; WX_CITY="Ithaca"
   fi
 fi
 
 # ─── Weather via Open-Meteo (cached 10min) ───────────────────────────────────
-# Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time for day/night)
+# Cache stores raw components: ICON|TEMP|FEEL|WIND|HUM
 WEATHER_CACHE="${CACHE_DIR}/weather"
 if cache_fresh "$WEATHER_CACHE" 600; then
-  IFS='|' read -r WX_CODE WX_TEMP WX_FEEL WX_WIND < "$WEATHER_CACHE"
+  IFS='|' read -r WX_ICON WX_TEMP WX_FEEL WX_WIND WX_HUM < "$WEATHER_CACHE"
 else
-  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${WX_LAT}&longitude=${WX_LON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
+  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${WX_LAT}&longitude=${WX_LON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
   if [[ -n "$WX_JSON" ]] && echo "$WX_JSON" | jq -e '.current' >/dev/null 2>&1; then
     WX_TEMP=$(echo "$WX_JSON" | jq -r '.current.temperature_2m // ""' | xargs printf '%.0f' 2>/dev/null)
     WX_FEEL=$(echo "$WX_JSON" | jq -r '.current.apparent_temperature // ""' | xargs printf '%.0f' 2>/dev/null)
     WX_WIND=$(echo "$WX_JSON" | jq -r '.current.wind_speed_10m // ""' | xargs printf '%.0f' 2>/dev/null)
+    WX_HUM=$(echo "$WX_JSON" | jq -r '.current.relative_humidity_2m // ""')
     WX_CODE=$(echo "$WX_JSON" | jq -r '.current.weather_code // 0')
-    echo "${WX_CODE}|${WX_TEMP}|${WX_FEEL}|${WX_WIND}" > "$WEATHER_CACHE"
+    case "$WX_CODE" in
+      0)        WX_ICON="☀️";;
+      1)        WX_ICON="🌤";;
+      2)        WX_ICON="⛅";;
+      3)        WX_ICON="☁️";;
+      45|48)    WX_ICON="🌫";;
+      51|53|55) WX_ICON="🌦";;
+      56|57)    WX_ICON="🌧❄";;
+      61|63|65) WX_ICON="🌧";;
+      66|67)    WX_ICON="🌧❄";;
+      71|73|75) WX_ICON="❄️";;
+      77)       WX_ICON="❄️";;
+      80|81|82) WX_ICON="🌧";;
+      85|86)    WX_ICON="🌨";;
+      95|96|99) WX_ICON="⛈";;
+      *)        WX_ICON="🌡";;
+    esac
+    echo "${WX_ICON}|${WX_TEMP}|${WX_FEEL}|${WX_WIND}|${WX_HUM}" > "$WEATHER_CACHE"
   else
-    WX_CODE="-1"; WX_TEMP="N/A"; WX_FEEL=""; WX_WIND=""
+    WX_ICON="🌡"; WX_TEMP="N/A"; WX_FEEL=""; WX_WIND=""; WX_HUM=""
   fi
 fi
-
-# ─── Weather icon (day/night aware) ──────────────────────────────────────────
-HOUR_NOW=$(date '+%H')
-if (( HOUR_NOW < 7 || HOUR_NOW >= 20 )); then IS_NIGHT=true; else IS_NIGHT=false; fi
-case "$WX_CODE" in
-  0)        $IS_NIGHT && WX_ICON="🌙"  || WX_ICON="☀️";;
-  1)        $IS_NIGHT && WX_ICON="🌙"  || WX_ICON="🌤";;
-  2)        $IS_NIGHT && WX_ICON="☁️🌙" || WX_ICON="⛅";;
-  3)        WX_ICON="☁️";;
-  45|48)    WX_ICON="🌫";;
-  51|53|55) WX_ICON="🌦";;
-  56|57)    WX_ICON="🌧❄";;
-  61|63|65) WX_ICON="🌧";;
-  66|67)    WX_ICON="🌧❄";;
-  71|73|75) WX_ICON="❄️";;
-  77)       WX_ICON="❄️";;
-  80|81|82) WX_ICON="🌧";;
-  85|86)    WX_ICON="🌨";;
-  95|96|99) WX_ICON="⛈";;
-  *)        WX_ICON="🌡";;
-esac
 
 # ─── Battery (cross-platform) ─────────────────────────────────────────────────
 if [[ "$OS_TYPE" == "Darwin" ]]; then
@@ -217,6 +198,7 @@ fmt_duration() {
   fi
 }
 DUR_FMT=$(fmt_duration "$DURATION_MS")
+API_FMT=$(fmt_duration "$API_MS")
 
 # ─── Token format ─────────────────────────────────────────────────────────────
 fmt_tokens() {
@@ -302,14 +284,14 @@ else
 fi
 
 # ─── Session row ──────────────────────────────────────────────────────────────
-SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET} lines${PIPE}${WHITE}Dur ${DUR_FMT}${RESET}${PIPE}${DIM}#${SESSION_SHORT}${RESET}"
+SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET} lines${PIPE}${WHITE}${DUR_FMT}${RESET}${PIPE}${CYAN}API ${API_FMT}${RESET}${PIPE}${DIM}#${SESSION_SHORT}${RESET}"
 [[ -n "$BATT" ]] && SESSION_ROW+="${PIPE}${BATT}"
 [[ -n "$COST_PART" ]] && SESSION_ROW+="$COST_PART"
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 echo -e "${DIM}─── ${RESET}${BCYAN}| CC STATUSLINE |${RESET}${DIM} ────────────────────────────────────────────────────${RESET}"
-echo -e "${BCYAN}◉ LOC:${RESET} ${BWHITE}${WX_CITY}${RESET}${PIPE}${BYELLOW}${TIME_NOW}${RESET}${PIPE}${WHITE}${DATE_NOW}${RESET}${PIPE}${WHITE}${WX_ICON}  ${WX_TEMP}°F · ${WX_WIND}mph${RESET}"
+echo -e "${BCYAN}◉ LOC:${RESET} ${BWHITE}${WX_CITY}${RESET}${PIPE}${BYELLOW}${TIME_NOW}${RESET}${PIPE}${WHITE}${DATE_NOW}${RESET}${PIPE}${WHITE}${WX_ICON}  ${WX_TEMP}°F · ${WX_WIND}mph · ${WX_HUM}%${RESET}"
 echo -e "${BCYAN}▲ ENV:${RESET} CC: ${WHITE}v${VERSION}${RESET}${PIPE}${BGREEN}${AUTH_TAG}${RESET}${PIPE}${BCYAN}${MODEL}${RESET}"
-echo -e "${BBLUE}● CONTEXT:${RESET} ${CTX_BAR} ${BYELLOW}${PCT}% used${RESET}${PIPE}${DIM}${CTX_WIN_LABEL} ctx${RESET}${PIPE}${CYAN}In:${IN_FMT}  Out:${OUT_FMT}${RESET}${CTX_TIER}"
+echo -e "${BBLUE}● CONTEXT:${RESET} ${CTX_BAR} ${BYELLOW}${PCT}% used${RESET}${PIPE}${CYAN}In:${IN_FMT}  Out:${OUT_FMT}${RESET}${CTX_TIER}"
 echo -e "$GIT_ROW"
 echo -e "$SESSION_ROW"
