@@ -120,3 +120,19 @@ for model names and full setup instructions.
 - **Weather:** [Open-Meteo](https://open-meteo.com) — free, no API key, cached 10 minutes
 - Both services must be reachable. If blocked by a Pi-hole or firewall, whitelist
   `ipapi.co` and `api.open-meteo.com`.
+
+## Troubleshooting
+
+### CoreLocationCLI blocked by macOS Gatekeeper
+
+If you experiment with [`CoreLocationCLI`](https://github.com/fulldecent/corelocationcli)
+for more precise city detection, macOS may block first launch because the binary
+is not notarized.
+
+1. Run `CoreLocationCLI -once`
+2. In macOS, open **System Settings → Privacy & Security**
+3. Scroll down and click **Allow Anyway** for CoreLocationCLI
+4. Re-run `CoreLocationCLI -once` and grant Location Services access
+
+This project intentionally defaults to `ipapi.co` so the statusline continues to
+work without extra binaries or Gatekeeper exceptions.
