@@ -42,11 +42,16 @@ WORK_DIR="${PROJ_DIR:-$CWD}"
 PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
 
 # ─── Auth detection ──────────────────────────────────────────────────────────
+# Claude Code may not pass ANTHROPIC_API_KEY/BASE_URL into the statusline
+# process even when the active session is API-key based. Use session cost as a
+# fallback signal so we still show a useful auth tag and cost.
 if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
   GW_HOST=$(echo "$ANTHROPIC_BASE_URL" | sed -E 's|https?://||; s|/.*||' | awk -F. '{print $(NF-1)}')
   AUTH_TAG="GW:${GW_HOST}"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   AUTH_TAG="API:..${ANTHROPIC_API_KEY: -4}"
+elif awk "BEGIN {exit !($COST > 0)}"; then
+  AUTH_TAG="API"
 else
   AUTH_TAG="OAuth"
 fi
@@ -260,7 +265,7 @@ fi
 COST_PART=""
 if [[ "$AUTH_TAG" == GW:* ]]; then
   COST_PART="${PIPE}${BYELLOW}~$(printf '$%.4f' "$COST") est${RESET}"
-elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+elif [[ "$AUTH_TAG" == API* ]]; then
   COST_PART="${PIPE}${BMAGENTA}$(printf '$%.4f' "$COST")${RESET}"
 fi
 
