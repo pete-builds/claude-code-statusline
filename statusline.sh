@@ -19,24 +19,43 @@ BBLUE='\033[1;34m'
 
 PIPE="${DIM} | ${RESET}"
 
-# ─── Read session JSON from stdin ────────────────────────────────────────────
+# ─── Read session JSON from stdin (single jq call for performance) ───────────
 INPUT=$(cat)
 
-MODEL=$(echo "$INPUT" | jq -r '.model.display_name // "Unknown"')
-USED_PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0')
-COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // 0')
-DURATION_MS=$(echo "$INPUT" | jq -r '.cost.total_duration_ms // 0')
-PROJ_DIR=$(echo "$INPUT" | jq -r '.workspace.project_dir // ""')
-CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
-LINES_ADD=$(echo "$INPUT" | jq -r '.cost.total_lines_added // 0')
-LINES_DEL=$(echo "$INPUT" | jq -r '.cost.total_lines_removed // 0')
-VERSION=$(echo "$INPUT" | jq -r '.version // "?"')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+eval "$(echo "$INPUT" | jq -r '
+  @sh "MODEL=\(.model.display_name // "Unknown")",
+  @sh "USED_PCT=\(.context_window.used_percentage // 0)",
+  @sh "COST=\(.cost.total_cost_usd // 0)",
+  @sh "DURATION_MS=\(.cost.total_duration_ms // 0)",
+  @sh "PROJ_DIR=\(.workspace.project_dir // "")",
+  @sh "CWD=\(.cwd // "")",
+  @sh "LINES_ADD=\(.cost.total_lines_added // 0)",
+  @sh "LINES_DEL=\(.cost.total_lines_removed // 0)",
+  @sh "VERSION=\(.version // "?")",
+  @sh "SESSION_ID=\(.session_id // "")",
+  @sh "IN_TOKENS=\(.context_window.total_input_tokens // 0)",
+  @sh "OUT_TOKENS=\(.context_window.total_output_tokens // 0)",
+  @sh "EXCEEDS_200K=\(.exceeds_200k_tokens // false)",
+  @sh "CTX_WIN_SIZE=\(.context_window.context_window_size // 0)",
+  @sh "RL_5H_PCT=\(.rate_limits.five_hour.used_percentage // "")",
+  @sh "RL_5H_RESETS=\(.rate_limits.five_hour.resets_at // "")",
+  @sh "RL_7D_PCT=\(.rate_limits.seven_day.used_percentage // "")",
+  @sh "RL_7D_RESETS=\(.rate_limits.seven_day.resets_at // "")",
+  @sh "VIM_MODE=\(.vim.mode // "")",
+  @sh "AGENT_NAME=\(.agent.name // "")",
+  @sh "WORKTREE_NAME=\(.worktree.name // "")",
+  @sh "WORKTREE_BRANCH=\(.worktree.branch // "")"
+' | tr ',' '\n')"
 SESSION_SHORT="${SESSION_ID:0:7}"
-IN_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_input_tokens // 0')
-OUT_TOKENS=$(echo "$INPUT" | jq -r '.context_window.total_output_tokens // 0')
-API_MS=$(echo "$INPUT" | jq -r '.cost.total_api_duration_ms // 0')
-EXCEEDS_200K=$(echo "$INPUT" | jq -r '.exceeds_200k_tokens // false')
+if (( CTX_WIN_SIZE >= 1000000 )); then
+  CTX_WIN_LABEL="1M"
+elif (( CTX_WIN_SIZE > 0 )); then
+  CTX_WIN_LABEL="200K"
+elif [[ "$MODEL" == *[Oo]pus* ]]; then
+  CTX_WIN_LABEL="1M"
+else
+  CTX_WIN_LABEL="200K"
+fi
 
 WORK_DIR="${PROJ_DIR:-$CWD}"
 PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
@@ -107,9 +126,15 @@ else
   echo "${BRANCH}|${AHEAD}|${BEHIND}|${MODIFIED}" > "$GIT_CACHE"
 fi
 
-# ─── Location via ipapi.co (HTTPS, cached 1hr) ───────────────────────────────
+# ─── Location via ipapi.co (HTTPS, cached 1hr, refresh on network/IP change) ─────
 LOCATION_CACHE="${CACHE_DIR}/location"
-if cache_fresh "$LOCATION_CACHE" 3600; then
+IP_CACHE="${CACHE_DIR}/location_ip"
+CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+CACHED_IP=""
+[[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+
+# Refresh if cache stale OR public IP changed (helps travel/hotspot session resumes)
+if cache_fresh "$LOCATION_CACHE" 3600 && [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" == "$CACHED_IP" ]]; then
   IFS='|' read -r WX_LAT WX_LON WX_CITY < "$LOCATION_CACHE"
 else
   LOC_JSON=$(curl -s "https://ipapi.co/json/" --max-time 4 2>/dev/null)
@@ -118,46 +143,50 @@ else
     WX_LON=$(echo "$LOC_JSON" | jq -r '.longitude')
     WX_CITY=$(echo "$LOC_JSON" | jq -r '.city')
     echo "${WX_LAT}|${WX_LON}|${WX_CITY}" > "$LOCATION_CACHE"
+    [[ -n "$CURRENT_IP" ]] && echo "$CURRENT_IP" > "$IP_CACHE"
   else
     WX_LAT="42.44"; WX_LON="-76.50"; WX_CITY="Ithaca"
   fi
 fi
 
 # ─── Weather via Open-Meteo (cached 10min) ───────────────────────────────────
-# Cache stores raw components: ICON|TEMP|FEEL|WIND|HUM
+# Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time for day/night)
 WEATHER_CACHE="${CACHE_DIR}/weather"
 if cache_fresh "$WEATHER_CACHE" 600; then
-  IFS='|' read -r WX_ICON WX_TEMP WX_FEEL WX_WIND WX_HUM < "$WEATHER_CACHE"
+  IFS='|' read -r WX_CODE WX_TEMP WX_FEEL WX_WIND < "$WEATHER_CACHE"
 else
-  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${WX_LAT}&longitude=${WX_LON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
+  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${WX_LAT}&longitude=${WX_LON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
   if [[ -n "$WX_JSON" ]] && echo "$WX_JSON" | jq -e '.current' >/dev/null 2>&1; then
     WX_TEMP=$(echo "$WX_JSON" | jq -r '.current.temperature_2m // ""' | xargs printf '%.0f' 2>/dev/null)
     WX_FEEL=$(echo "$WX_JSON" | jq -r '.current.apparent_temperature // ""' | xargs printf '%.0f' 2>/dev/null)
     WX_WIND=$(echo "$WX_JSON" | jq -r '.current.wind_speed_10m // ""' | xargs printf '%.0f' 2>/dev/null)
-    WX_HUM=$(echo "$WX_JSON" | jq -r '.current.relative_humidity_2m // ""')
     WX_CODE=$(echo "$WX_JSON" | jq -r '.current.weather_code // 0')
-    case "$WX_CODE" in
-      0)        WX_ICON="☀️";;
-      1)        WX_ICON="🌤";;
-      2)        WX_ICON="⛅";;
-      3)        WX_ICON="☁️";;
-      45|48)    WX_ICON="🌫";;
-      51|53|55) WX_ICON="🌦";;
-      56|57)    WX_ICON="🌧❄";;
-      61|63|65) WX_ICON="🌧";;
-      66|67)    WX_ICON="🌧❄";;
-      71|73|75) WX_ICON="❄️";;
-      77)       WX_ICON="❄️";;
-      80|81|82) WX_ICON="🌧";;
-      85|86)    WX_ICON="🌨";;
-      95|96|99) WX_ICON="⛈";;
-      *)        WX_ICON="🌡";;
-    esac
-    echo "${WX_ICON}|${WX_TEMP}|${WX_FEEL}|${WX_WIND}|${WX_HUM}" > "$WEATHER_CACHE"
+    echo "${WX_CODE}|${WX_TEMP}|${WX_FEEL}|${WX_WIND}" > "$WEATHER_CACHE"
   else
-    WX_ICON="🌡"; WX_TEMP="N/A"; WX_FEEL=""; WX_WIND=""; WX_HUM=""
+    WX_CODE="-1"; WX_TEMP="N/A"; WX_FEEL=""; WX_WIND=""
   fi
 fi
+
+# ─── Weather icon (day/night aware) ──────────────────────────────────────────
+HOUR_NOW=$(date '+%-H')
+if (( HOUR_NOW < 7 || HOUR_NOW >= 20 )); then IS_NIGHT=true; else IS_NIGHT=false; fi
+case "$WX_CODE" in
+  0)        $IS_NIGHT && WX_ICON="🌙"  || WX_ICON="☀️";;
+  1)        $IS_NIGHT && WX_ICON="🌙"  || WX_ICON="🌤";;
+  2)        $IS_NIGHT && WX_ICON="☁️🌙" || WX_ICON="⛅";;
+  3)        WX_ICON="☁️";;
+  45|48)    WX_ICON="🌫";;
+  51|53|55) WX_ICON="🌦";;
+  56|57)    WX_ICON="🌧❄";;
+  61|63|65) WX_ICON="🌧";;
+  66|67)    WX_ICON="🌧❄";;
+  71|73|75) WX_ICON="❄️";;
+  77)       WX_ICON="❄️";;
+  80|81|82) WX_ICON="🌧";;
+  85|86)    WX_ICON="🌨";;
+  95|96|99) WX_ICON="⛈";;
+  *)        WX_ICON="🌡";;
+esac
 
 # ─── Battery (cross-platform) ─────────────────────────────────────────────────
 if [[ "$OS_TYPE" == "Darwin" ]]; then
@@ -198,7 +227,6 @@ fmt_duration() {
   fi
 }
 DUR_FMT=$(fmt_duration "$DURATION_MS")
-API_FMT=$(fmt_duration "$API_MS")
 
 # ─── Token format ─────────────────────────────────────────────────────────────
 fmt_tokens() {
@@ -283,15 +311,56 @@ else
   GIT_ROW="${BMAGENTA}◆ GIT:${RESET} ${DIM}no git${RESET}"
 fi
 
+# ─── Rate limits (Claude.ai Pro/Max only) ────────────────────────────────────
+RL_PART=""
+if [[ -n "$RL_5H_PCT" ]] && [[ "$RL_5H_PCT" != "null" ]]; then
+  RL_5H_NUM=$(printf '%.0f' "$RL_5H_PCT" 2>/dev/null || echo 0)
+  if (( RL_5H_NUM >= 80 )); then RL_5H_CLR="$BRED"
+  elif (( RL_5H_NUM >= 50 )); then RL_5H_CLR="$BYELLOW"
+  else RL_5H_CLR="$BGREEN"; fi
+  RL_PART="${RL_5H_CLR}5h:${RL_5H_NUM}%${RESET}"
+fi
+if [[ -n "$RL_7D_PCT" ]] && [[ "$RL_7D_PCT" != "null" ]]; then
+  RL_7D_NUM=$(printf '%.0f' "$RL_7D_PCT" 2>/dev/null || echo 0)
+  if (( RL_7D_NUM >= 80 )); then RL_7D_CLR="$BRED"
+  elif (( RL_7D_NUM >= 50 )); then RL_7D_CLR="$BYELLOW"
+  else RL_7D_CLR="$BGREEN"; fi
+  [[ -n "$RL_PART" ]] && RL_PART+=" "
+  RL_PART+="${RL_7D_CLR}7d:${RL_7D_NUM}%${RESET}"
+fi
+
+# ─── Vim mode indicator ──────────────────────────────────────────────────────
+VIM_PART=""
+if [[ -n "$VIM_MODE" ]] && [[ "$VIM_MODE" != "null" ]]; then
+  if [[ "$VIM_MODE" == "INSERT" ]]; then
+    VIM_PART="${BGREEN}[INS]${RESET}"
+  else
+    VIM_PART="${BCYAN}[NOR]${RESET}"
+  fi
+fi
+
+# ─── Agent/worktree indicators ───────────────────────────────────────────────
+AGENT_PART=""
+[[ -n "$AGENT_NAME" ]] && [[ "$AGENT_NAME" != "null" ]] && AGENT_PART="${BMAGENTA}⚙ ${AGENT_NAME}${RESET}"
+WORKTREE_PART=""
+[[ -n "$WORKTREE_NAME" ]] && [[ "$WORKTREE_NAME" != "null" ]] && WORKTREE_PART="${WORKTREE_NAME}${DIM}(${WORKTREE_BRANCH})${RESET}"
+
 # ─── Session row ──────────────────────────────────────────────────────────────
-SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET} lines${PIPE}${WHITE}${DUR_FMT}${RESET}${PIPE}${CYAN}API ${API_FMT}${RESET}${PIPE}${DIM}#${SESSION_SHORT}${RESET}"
+SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET} lines${PIPE}${WHITE}Dur ${DUR_FMT}${RESET}${PIPE}${DIM}#${SESSION_SHORT}${RESET}"
 [[ -n "$BATT" ]] && SESSION_ROW+="${PIPE}${BATT}"
 [[ -n "$COST_PART" ]] && SESSION_ROW+="$COST_PART"
+[[ -n "$RL_PART" ]] && SESSION_ROW+="${PIPE}${RL_PART}"
+
+# ─── ENV row extras ──────────────────────────────────────────────────────────
+ENV_EXTRAS=""
+[[ -n "$VIM_PART" ]] && ENV_EXTRAS+="${PIPE}${VIM_PART}"
+[[ -n "$AGENT_PART" ]] && ENV_EXTRAS+="${PIPE}${AGENT_PART}"
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 echo -e "${DIM}─── ${RESET}${BCYAN}| CC STATUSLINE |${RESET}${DIM} ────────────────────────────────────────────────────${RESET}"
-echo -e "${BCYAN}◉ LOC:${RESET} ${BWHITE}${WX_CITY}${RESET}${PIPE}${BYELLOW}${TIME_NOW}${RESET}${PIPE}${WHITE}${DATE_NOW}${RESET}${PIPE}${WHITE}${WX_ICON}  ${WX_TEMP}°F · ${WX_WIND}mph · ${WX_HUM}%${RESET}"
-echo -e "${BCYAN}▲ ENV:${RESET} CC: ${WHITE}v${VERSION}${RESET}${PIPE}${BGREEN}${AUTH_TAG}${RESET}${PIPE}${BCYAN}${MODEL}${RESET}"
-echo -e "${BBLUE}● CONTEXT:${RESET} ${CTX_BAR} ${BYELLOW}${PCT}% used${RESET}${PIPE}${CYAN}In:${IN_FMT}  Out:${OUT_FMT}${RESET}${CTX_TIER}"
+echo -e "${BCYAN}◉ LOC:${RESET} ${BWHITE}${WX_CITY}${RESET}${PIPE}${BYELLOW}${TIME_NOW}${RESET}${PIPE}${WHITE}${DATE_NOW}${RESET}${PIPE}${WHITE}${WX_ICON}  ${WX_TEMP}°F · ${WX_WIND}mph${RESET}"
+echo -e "${BCYAN}▲ ENV:${RESET} CC: ${WHITE}v${VERSION}${RESET}${PIPE}${BGREEN}${AUTH_TAG}${RESET}${PIPE}${BCYAN}${MODEL}${RESET}${ENV_EXTRAS}"
+[[ -n "$WORKTREE_PART" ]] && echo -e "${BYELLOW}🌿 WORKTREE:${RESET} ${WORKTREE_PART}"
+echo -e "${BBLUE}● CONTEXT:${RESET} ${CTX_BAR} ${BYELLOW}${PCT}% used${RESET}${PIPE}${DIM}${CTX_WIN_LABEL} ctx${RESET}${PIPE}${CYAN}In:${IN_FMT}  Out:${OUT_FMT}${RESET}${CTX_TIER}"
 echo -e "$GIT_ROW"
 echo -e "$SESSION_ROW"
