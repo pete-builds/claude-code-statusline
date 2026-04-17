@@ -1,0 +1,13 @@
+# Force LF line endings on checkout for shell scripts, regardless of the
+# user's core.autocrlf setting. Prevents the classic WSL/Windows gotcha
+# where bash fails with "/bin/bash^M: bad interpreter" on cloned .sh files.
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Config files that should also stay LF
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf

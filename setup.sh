@@ -2,8 +2,9 @@
 # setup.sh — Install Claude Code statusline
 #
 # What it does:
-#   1. Copies statusline.sh to ~/.claude/statusline.sh
-#   2. Merges statusLine config into ~/.claude/settings.json (preserves existing settings)
+#   1. Preflight: verifies jq, curl, bc are installed (prints install hints if not)
+#   2. Copies statusline.sh to ~/.claude/statusline.sh (strips CRLF defensively)
+#   3. Merges statusLine config into ~/.claude/settings.json (preserves other settings)
 #
 # Usage: ./setup.sh
 
@@ -18,19 +19,61 @@ SETTINGS="$CLAUDE_DIR/settings.json"
 echo "=== Claude Code Statusline Setup ==="
 echo ""
 
-# Ensure ~/.claude exists
+# ─── Preflight: required commands ──────────────────────────────────────────
+detect_install_hint() {
+  local pkg="$1"
+  if command -v brew >/dev/null 2>&1; then
+    echo "  brew install $pkg"
+  elif command -v apt >/dev/null 2>&1; then
+    echo "  sudo apt install -y $pkg"
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "  sudo dnf install -y $pkg"
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "  sudo pacman -S --noconfirm $pkg"
+  elif command -v apk >/dev/null 2>&1; then
+    echo "  sudo apk add $pkg"
+  else
+    echo "  (install '$pkg' via your package manager)"
+  fi
+}
+
+MISSING=()
+for cmd in jq curl bc; do
+  command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
+done
+if (( ${#MISSING[@]} > 0 )); then
+  echo "Missing required commands: ${MISSING[*]}"
+  echo ""
+  echo "Install with:"
+  for pkg in "${MISSING[@]}"; do
+    detect_install_hint "$pkg"
+  done
+  echo ""
+  echo "Re-run ./setup.sh after installing."
+  exit 1
+fi
+
+# ─── Source file sanity ────────────────────────────────────────────────────
+if [[ ! -f "$SL_SOURCE" ]]; then
+  echo "Error: statusline.sh not found at $SL_SOURCE"
+  exit 1
+fi
+
+# ─── Install ───────────────────────────────────────────────────────────────
 mkdir -p "$CLAUDE_DIR"
 
-# 1. Install statusline script
 if [[ -f "$SL_DEST" ]]; then
   echo "Updating: $SL_DEST"
 else
   echo "Installing: $SL_DEST"
 fi
-cp "$SL_SOURCE" "$SL_DEST"
+
+# Strip CRLF defensively in case the file was downloaded through a Windows
+# path that injected them (zip download, git without .gitattributes, etc.)
+tr -d '\r' < "$SL_SOURCE" > "$SL_DEST"
 chmod +x "$SL_DEST"
 
-# 2. Merge statusLine config into settings.json
+# ─── Merge statusLine into settings.json ───────────────────────────────────
 SL_CONFIG='{"type":"command","command":"~/.claude/statusline.sh"}'
 
 if [[ -f "$SETTINGS" ]]; then
@@ -45,7 +88,7 @@ else
   echo "{\"statusLine\":$SL_CONFIG}" | jq . > "$SETTINGS"
 fi
 
-# 3. Clear stale caches
+# ─── Clear stale caches ────────────────────────────────────────────────────
 rm -f /tmp/claude-sl-location /tmp/claude-sl-weather /tmp/claude-sl-git /tmp/claude-sl-counts
 
 echo ""
@@ -54,6 +97,6 @@ echo ""
 echo "  ─── | CC STATUSLINE | ────────────────────────────────────"
 echo "  LOC: City | time | date | weather"
 echo "  ENV: CC version | auth | model"
-echo "  ● CONTEXT: bar | % | tokens in/out  [ T1/T2 on Cornell gateway ]"
+echo "  ● CONTEXT: bar | % | context window size | tokens in/out"
 echo "  ◆ GIT: project | branch | sync | modified"
-echo "  + SESSION: lines | duration | API time | session hash | battery | cost"
+echo "  + SESSION: lines | duration | session hash | battery | cost | rate limits"

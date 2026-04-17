@@ -17,19 +17,29 @@ ENV: CC: v2.1.63 | OAuth | anthropic.claude-4.6-sonnet
 
 - macOS or Linux (including WSL)
 - [Claude Code](https://claude.ai/download) v2.x+
-- `jq` (`brew install jq` on macOS, `sudo apt install jq` on Debian/Ubuntu)
-- `curl`
+- `jq`, `curl`, `bc` (`brew install jq bc` on macOS, `sudo apt install -y jq curl bc` on Debian/Ubuntu)
+
+The `setup.sh` script runs a preflight check and tells you exactly which commands to run if anything is missing.
 
 ## Install
 
-### Option 1: Setup script
+### Option 1: Let Claude Code install it
 
-Copy `statusline.sh` and `setup.sh` to a local folder, then:
+Just point a Claude Code session at the repo:
+
+> Clone https://github.com/pete-builds/claude-code-statusline and run its setup.sh
+
+Claude handles cloning, dependency checks, and the settings.json merge.
+
+### Option 2: Setup script
 
 ```bash
-chmod +x setup.sh
+git clone https://github.com/pete-builds/claude-code-statusline.git
+cd claude-code-statusline
 ./setup.sh
 ```
+
+**Windows/WSL note:** clone from inside WSL (not from Windows Git or git-bash) so the shell scripts get LF line endings. The repo pins `eol=lf` via `.gitattributes`, but some tools ignore attributes. If you see `bad interpreter: /bin/bash^M`, run `dos2unix statusline.sh setup.sh`.
 
 ### Option 2: Manual install
 
