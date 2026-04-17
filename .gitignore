@@ -1,0 +1,25 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backups/temp
+*.bak
+*.tmp
+*.log
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local script customizations (if users fork and override)
+statusline.local.sh
+*.local
