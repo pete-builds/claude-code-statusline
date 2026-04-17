@@ -35,6 +35,10 @@ eval "$(echo "$INPUT" | jq -r '
   @sh "SESSION_ID=\(.session_id // "")",
   @sh "IN_TOKENS=\(.context_window.total_input_tokens // 0)",
   @sh "OUT_TOKENS=\(.context_window.total_output_tokens // 0)",
+  @sh "CUR_IN_TOKENS=\(.context_window.current_usage.input_tokens // 0)",
+  @sh "CUR_CACHE_CREATE=\(.context_window.current_usage.cache_creation_input_tokens // 0)",
+  @sh "CUR_CACHE_READ=\(.context_window.current_usage.cache_read_input_tokens // 0)",
+  @sh "CUR_USAGE_PRESENT=\(if .context_window.current_usage == null then "false" else "true" end)",
   @sh "EXCEEDS_200K=\(.exceeds_200k_tokens // false)",
   @sh "CTX_WIN_SIZE=\(.context_window.context_window_size // 0)",
   @sh "RL_5H_PCT=\(.rate_limits.five_hour.used_percentage // "")",
@@ -47,14 +51,48 @@ eval "$(echo "$INPUT" | jq -r '
   @sh "WORKTREE_BRANCH=\(.worktree.branch // "")"
 ' | tr ',' '\n')"
 SESSION_SHORT="${SESSION_ID:0:7}"
+
+# ─── Context window detection ────────────────────────────────────────────────
+# Priority cascade. Claude Code bug anthropics/claude-code#34143 (still open)
+# makes context_window_size report 200000 on Max plans for 1M-capable models,
+# even when the backend actually uses 1M. Prefer empirical JSON signals; fall
+# back to a model+plan heuristic only when no API call has yet proven the size.
+# Retire P4 when #34143 closes and the debug log shows CTX_WIN_SIZE reliably
+# reporting 1000000 on Max sessions (~/.cache/claude/statusline/context_window_debug.log).
+#
+# P1: JSON reports 1M (trusted)
+# P2: exceeds_200k_tokens true (empirical — last response crossed 200K)
+# P3: current-call token sum > 200K (empirical — same idea, different source)
+# P4: Max plan + 1M-capable model (heuristic — label suffixed with "*")
+# Fallback: reported size
+CUR_USAGE_SUM=$(( CUR_IN_TOKENS + CUR_CACHE_CREATE + CUR_CACHE_READ ))
+
+# TODO: remove MODEL_SUPPORTS_1M and P4 branch when anthropics/claude-code#34143 is fixed.
+MODEL_SUPPORTS_1M=false
+case "$MODEL" in
+  *[Oo]pus*4.[67]*|*[Oo]pus*4-[67]*|*[Ss]onnet*4.6*|*[Ss]onnet*4-6*) MODEL_SUPPORTS_1M=true ;;
+esac
+
 if (( CTX_WIN_SIZE >= 1000000 )); then
-  CTX_WIN_LABEL="1M"
-elif (( CTX_WIN_SIZE > 0 )); then
-  CTX_WIN_LABEL="200K"
-elif [[ "$MODEL" == *[Oo]pus* ]]; then
-  CTX_WIN_LABEL="1M"
+  CTX_WIN_LABEL="1M";  DECISION="P1_trusted";   EFFECTIVE_WIN=1000000
+elif [[ "$EXCEEDS_200K" == "true" ]]; then
+  CTX_WIN_LABEL="1M";  DECISION="P2_exceeds";   EFFECTIVE_WIN=1000000
+elif [[ "$CUR_USAGE_PRESENT" == "true" ]] && (( CUR_USAGE_SUM > 200000 )); then
+  CTX_WIN_LABEL="1M";  DECISION="P3_sum";       EFFECTIVE_WIN=1000000
+elif [[ "$MODEL_SUPPORTS_1M" == "true" ]] && [[ -n "$RL_5H_PCT" ]] && [[ "$RL_5H_PCT" != "null" ]]; then
+  CTX_WIN_LABEL="1M*"; DECISION="P4_heuristic"; EFFECTIVE_WIN=1000000
 else
-  CTX_WIN_LABEL="200K"
+  CTX_WIN_LABEL="200K"; DECISION="fallback_200k"; EFFECTIVE_WIN=200000
+fi
+
+# ─── Debug log (for retiring P4 when #34143 closes) ──────────────────────────
+DEBUG_LOG="${HOME}/.cache/claude/statusline/context_window_debug.log"
+if [[ -d "$(dirname "$DEBUG_LOG")" ]]; then
+  MODEL_SAFE="${MODEL//|/_}"
+  RL_5H_PRESENT="false"
+  [[ -n "$RL_5H_PCT" ]] && [[ "$RL_5H_PCT" != "null" ]] && RL_5H_PRESENT="true"
+  echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')|${SESSION_SHORT}|${MODEL_SAFE}|${CTX_WIN_SIZE}|${USED_PCT}|${IN_TOKENS}|${OUT_TOKENS}|${EXCEEDS_200K}|${CUR_USAGE_SUM}|${RL_5H_PRESENT}|${CTX_WIN_LABEL}|${DECISION}" >> "$DEBUG_LOG" 2>/dev/null
+  { tail -n 200 "$DEBUG_LOG" > "${DEBUG_LOG}.tmp" 2>/dev/null && mv "${DEBUG_LOG}.tmp" "$DEBUG_LOG" 2>/dev/null; } &
 fi
 
 WORK_DIR="${PROJ_DIR:-$CWD}"
@@ -243,10 +281,27 @@ IN_FMT=$(fmt_tokens "$IN_TOKENS")
 OUT_FMT=$(fmt_tokens "$OUT_TOKENS")
 
 # ─── Context bar (wide) ───────────────────────────────────────────────────────
-# Scale raw % by auto-compact threshold (~85%) so bar fills to 100% when truly full
-RAW_PCT=$(printf '%.0f' "$USED_PCT" 2>/dev/null || echo 0)
-[[ -z "$RAW_PCT" ]] && RAW_PCT=0
-PCT=$(( RAW_PCT * 100 / 85 ))
+# When EFFECTIVE_WIN was inferred 1M but JSON reports 200K (bug #34143), the
+# precomputed used_percentage is calculated against 200K and is therefore
+# inflated. Recompute locally from current_usage token sum against 1M.
+# Otherwise trust used_percentage. On 200K sessions, scale by the ~85%
+# auto-compact threshold so the bar fills visually at true full. The 1M
+# auto-compact threshold is undocumented, so skip scaling there.
+if (( EFFECTIVE_WIN == 1000000 )) && (( CTX_WIN_SIZE < 1000000 )); then
+  if [[ "$CUR_USAGE_PRESENT" == "true" ]]; then
+    RAW_PCT=$(( CUR_USAGE_SUM * 100 / 1000000 ))
+  else
+    RAW_PCT=0
+  fi
+else
+  RAW_PCT=$(printf '%.0f' "$USED_PCT" 2>/dev/null || echo 0)
+  [[ -z "$RAW_PCT" ]] && RAW_PCT=0
+fi
+if (( EFFECTIVE_WIN == 1000000 )); then
+  PCT=$RAW_PCT
+else
+  PCT=$(( RAW_PCT * 100 / 85 ))
+fi
 (( PCT > 100 )) && PCT=100
 BAR_LEN=24
 FILLED=$(( PCT * BAR_LEN / 100 ))
@@ -312,21 +367,58 @@ else
 fi
 
 # ─── Rate limits (Claude.ai Pro/Max only) ────────────────────────────────────
+# Format a reset epoch (UTC) into a short local-time string: "1pm" if within
+# 24h, "Apr 23 7pm" otherwise. Returns empty if epoch is empty/null/0.
+# Honors CLAUDE_STATUSLINE_TZ env var (e.g. "America/New_York"); otherwise
+# uses the system's local timezone.
+fmt_reset_time() {
+  local epoch="$1"
+  [[ -z "$epoch" ]] && return
+  [[ "$epoch" == "null" ]] && return
+  (( epoch == 0 )) && return
+  local now_epoch delta fmt
+  now_epoch=$(date +%s)
+  delta=$(( epoch - now_epoch ))
+  if (( delta < 86400 )); then
+    fmt='+%-I%p'
+  else
+    fmt='+%b %-d %-I%p'
+  fi
+  local tz="${CLAUDE_STATUSLINE_TZ:-}"
+  if [[ "$OS_TYPE" == "Darwin" ]]; then
+    if [[ -n "$tz" ]]; then
+      TZ="$tz" date -r "$epoch" "$fmt" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+    else
+      date -r "$epoch" "$fmt" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+    fi
+  else
+    if [[ -n "$tz" ]]; then
+      TZ="$tz" date -d "@$epoch" "$fmt" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+    else
+      date -d "@$epoch" "$fmt" 2>/dev/null | tr '[:upper:]' '[:lower:]'
+    fi
+  fi
+}
+
 RL_PART=""
 if [[ -n "$RL_5H_PCT" ]] && [[ "$RL_5H_PCT" != "null" ]]; then
   RL_5H_NUM=$(printf '%.0f' "$RL_5H_PCT" 2>/dev/null || echo 0)
   if (( RL_5H_NUM >= 80 )); then RL_5H_CLR="$BRED"
   elif (( RL_5H_NUM >= 50 )); then RL_5H_CLR="$BYELLOW"
   else RL_5H_CLR="$BGREEN"; fi
+  RL_5H_RESET_FMT=$(fmt_reset_time "$RL_5H_RESETS")
   RL_PART="${RL_5H_CLR}5h:${RL_5H_NUM}%${RESET}"
+  [[ -n "$RL_5H_RESET_FMT" ]] && RL_PART+="${DIM}→${RL_5H_RESET_FMT}${RESET}"
 fi
 if [[ -n "$RL_7D_PCT" ]] && [[ "$RL_7D_PCT" != "null" ]]; then
   RL_7D_NUM=$(printf '%.0f' "$RL_7D_PCT" 2>/dev/null || echo 0)
   if (( RL_7D_NUM >= 80 )); then RL_7D_CLR="$BRED"
   elif (( RL_7D_NUM >= 50 )); then RL_7D_CLR="$BYELLOW"
   else RL_7D_CLR="$BGREEN"; fi
+  RL_7D_RESET_FMT=$(fmt_reset_time "$RL_7D_RESETS")
   [[ -n "$RL_PART" ]] && RL_PART+=" "
   RL_PART+="${RL_7D_CLR}7d:${RL_7D_NUM}%${RESET}"
+  [[ -n "$RL_7D_RESET_FMT" ]] && RL_PART+="${DIM}→${RL_7D_RESET_FMT}${RESET}"
 fi
 
 # ─── Vim mode indicator ──────────────────────────────────────────────────────
