@@ -105,23 +105,23 @@ how close you are to the context limit:
 
 ## Privacy & trust
 
-Worth knowing before you install:
+Worth knowing before you install.
 
-**Third-party network calls.** Every status refresh sends requests (cached, so not on every keystroke) to:
+**Third-party network calls.** Every status refresh sends cached requests (not every keystroke) to three providers:
 
-- `api.ipify.org` — returns your public IP
-- `ipapi.co` — geolocates your IP to city/lat/lon
-- `api.open-meteo.com` — returns current weather for those coordinates
+- `api.ipify.org` returns your public IP
+- `ipapi.co` geolocates your IP to city and lat/lon
+- `api.open-meteo.com` returns current weather for those coordinates
 
-None of these calls are authenticated, nothing is sent to me or to any server I control. But those three providers can log your IP and approximate location. If that's not acceptable for your setup (corporate VPN, privacy-conscious workflow, etc.), either edit the script to remove the location/weather blocks or run it behind a filtering proxy.
+None of these calls are authenticated. Nothing is sent to me or to any server I control. But those three providers can log your IP and approximate location. If that's not acceptable for your setup (corporate VPN, privacy-conscious workflow, etc.), either edit the script to remove the location and weather blocks or run it behind a filtering proxy.
 
-**Supply chain.** The script runs with your shell's privileges every time Claude Code refreshes the statusline. If this repository or my GitHub account is compromised, anyone who pulls updates or re-runs `setup.sh` gets the attacker's code executed automatically. The repo has no commit signing enforcement. Pin to a specific commit SHA in `setup.sh` if you want to freeze what you're running:
+**Supply chain.** The script runs with your shell's privileges every time Claude Code refreshes the statusline. If this repository or my GitHub account is compromised, anyone who pulls updates or re-runs `setup.sh` gets the attacker's code executed automatically. The repo has no commit signing enforcement. To freeze what you're running, pin to a specific commit SHA:
 
 ```bash
 git checkout <commit-sha>
 ./setup.sh
 ```
 
-**Local writes.** Setup installs to `~/.claude/statusline.sh` and merges a `statusLine` key into `~/.claude/settings.json` (other keys preserved). Runtime writes go to `~/.cache/claude/statusline/` — location/weather/git caches, plus `context_window_debug.log` (rotating, 200 lines, contains short session IDs, token counts, and model names). Nothing leaves your machine through this log.
+**Local writes.** Setup installs to `~/.claude/statusline.sh` and merges a `statusLine` key into `~/.claude/settings.json`, preserving other keys. Runtime writes go to `~/.cache/claude/statusline/`: location, weather, and git caches, plus `context_window_debug.log`, a rotating log capped at 200 lines containing short session IDs, token counts, and model names. Nothing leaves your machine through this log.
 
-**Non-risks.** Session JSON from Claude Code is shell-quoted via `jq @sh` before use — no command injection. API keys, when present, are only rendered as their last 4 characters. The script doesn't call out to any network endpoint beyond the three listed above.
+**Non-risks.** Session JSON from Claude Code is shell-quoted via `jq @sh` before use, so there's no command injection path. API keys, when present, are only rendered as their last 4 characters. The script doesn't call any network endpoint beyond the three listed above.
