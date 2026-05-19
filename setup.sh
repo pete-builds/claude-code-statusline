@@ -89,7 +89,12 @@ else
 fi
 
 # ─── Clear stale caches ────────────────────────────────────────────────────
-rm -f /tmp/claude-sl-location /tmp/claude-sl-weather /tmp/claude-sl-git /tmp/claude-sl-counts
+# statusline.sh caches location/weather/git under ~/.cache/claude/statusline.
+# Clear them on (re)install so an update doesn't keep showing stale data until
+# the TTLs expire. The rotating context_window_debug.log is left in place.
+SL_CACHE_DIR="$HOME/.cache/claude/statusline"
+rm -f "$SL_CACHE_DIR/git" "$SL_CACHE_DIR/location" \
+      "$SL_CACHE_DIR/location_ip" "$SL_CACHE_DIR/weather"
 
 echo ""
 echo "Done. Start a new Claude Code session to see the statusline."

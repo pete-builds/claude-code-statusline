@@ -41,7 +41,7 @@ cd claude-code-statusline
 
 **Windows/WSL note:** clone from inside WSL (not from Windows Git or git-bash) so the shell scripts get LF line endings. The repo pins `eol=lf` via `.gitattributes`, but some tools ignore attributes. If you see `bad interpreter: /bin/bash^M`, run `dos2unix statusline.sh setup.sh`.
 
-### Option 2: Manual install
+### Option 3: Manual install
 
 1. Copy `statusline.sh` to your Claude config directory:
 
