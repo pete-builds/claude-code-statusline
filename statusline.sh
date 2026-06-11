@@ -70,7 +70,7 @@ CUR_USAGE_SUM=$(( CUR_IN_TOKENS + CUR_CACHE_CREATE + CUR_CACHE_READ ))
 # TODO: remove MODEL_SUPPORTS_1M and P4 branch when anthropics/claude-code#34143 is fixed.
 MODEL_SUPPORTS_1M=false
 case "$MODEL" in
-  *[Oo]pus*4.[67]*|*[Oo]pus*4-[67]*|*[Ss]onnet*4.6*|*[Ss]onnet*4-6*) MODEL_SUPPORTS_1M=true ;;
+  *[Oo]pus*4.[678]*|*[Oo]pus*4-[678]*|*[Ss]onnet*4.6*|*[Ss]onnet*4-6*|*[Ff]able*) MODEL_SUPPORTS_1M=true ;;
 esac
 
 if (( CTX_WIN_SIZE >= 1000000 )); then

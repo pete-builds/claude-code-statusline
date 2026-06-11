@@ -50,6 +50,12 @@ out=$(render_context "$(make_json "Opus 4.7" 200000 99 false 30000 5000 210000 f
 out=$(render_context "$(make_json "Opus 4.7" 200000 5 false 0 0 0 true true)")
 [[ "$out" == *"1M* ctx"* ]] || { echo "FAIL P4: expected 1M* got $out"; exit 1; }
 
+# P4 heuristic: Fable 5 and Opus 4.8 are 1M-capable
+out=$(render_context "$(make_json "Fable 5" 200000 5 false 0 0 0 true true)")
+[[ "$out" == *"1M* ctx"* ]] || { echo "FAIL P4(fable): expected 1M* got $out"; exit 1; }
+out=$(render_context "$(make_json "Opus 4.8" 200000 5 false 0 0 0 true true)")
+[[ "$out" == *"1M* ctx"* ]] || { echo "FAIL P4(opus48): expected 1M* got $out"; exit 1; }
+
 # Fallback: 200K model, no rate_limits (API user)
 out=$(render_context "$(make_json "Haiku 4.5" 200000 20 false 5000 0 35000 false false)")
 [[ "$out" == *"200K ctx"* ]] || { echo "FAIL fallback: got $out"; exit 1; }
@@ -58,4 +64,4 @@ out=$(render_context "$(make_json "Haiku 4.5" 200000 20 false 5000 0 35000 false
 out=$(render_context "$(make_json "Opus 4.7" 200000 20 false 0 0 0 true false)")
 [[ "$out" == *"200K ctx"* ]] || { echo "FAIL fallback(no-rl): got $out"; exit 1; }
 
-echo "PASS: context window cascade (P1, P2, P3, P4, fallback)"
+echo "PASS: context window cascade (P1, P2, P3, P4, P4-fable/opus48, fallback)"
