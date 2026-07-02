@@ -6,6 +6,7 @@
 # to define a fallback location used before the first successful geolocation, or
 # when the geolocation service is unavailable. No personal default is baked into
 # this script. Override the path with STATUSLINE_CONFIG.
+# shellcheck source=/dev/null
 [[ -f "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" ]] && \
   source "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" 2>/dev/null
 #
@@ -21,6 +22,8 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
   IP_CACHE="${CACHE_DIR}/location_ip"
   WEATHER_CACHE="${CACHE_DIR}/weather"
   LOCK_FILE="${CACHE_DIR}/refresh.lock"
+  FAIL_CACHE="${CACHE_DIR}/location_fail"   # backoff marker: touched when geolocation fails
+  GEO_FAIL_COOLDOWN=3600                     # wait this many seconds before retrying after a failure
 
   # Best-effort lock: skip if a refresh is already running. Stale lock (older
   # than 30s — well beyond worst-case curl timeouts below) is treated as dead
@@ -47,20 +50,46 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
 
   NEED_LOCATION=false
   if [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" != "$CACHED_IP" ]]; then
-    NEED_LOCATION=true
+    NEED_LOCATION=true                       # IP changed -> always look up (and clear any backoff)
+    rm -f "$FAIL_CACHE"
   elif [[ ! -f "$LOCATION_CACHE" ]]; then
     NEED_LOCATION=true
+    # Same IP, no cached location: honor the failure backoff so we don't hammer a
+    # rate-limited geolocation API on every refresh while it's down.
+    if [[ -f "$FAIL_CACHE" ]]; then
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        FAIL_MTIME=$(stat -f %m "$FAIL_CACHE" 2>/dev/null || echo 0)
+      else
+        FAIL_MTIME=$(stat -c %Y "$FAIL_CACHE" 2>/dev/null || echo 0)
+      fi
+      (( $(date +%s) - FAIL_MTIME < GEO_FAIL_COOLDOWN )) && NEED_LOCATION=false
+    fi
   fi
 
-  RLAT="" RLON=""
+  RLAT="" RLON="" RCITY=""
   if [[ "$NEED_LOCATION" == "true" ]]; then
+    # Provider 1: ipapi.co (fields: .latitude .longitude .city)
     LOC_JSON=$(curl -s "https://ipapi.co/json/" --max-time 4 2>/dev/null)
     if [[ -n "$LOC_JSON" ]] && echo "$LOC_JSON" | jq -e '.latitude' >/dev/null 2>&1; then
       RLAT=$(echo "$LOC_JSON" | jq -r '.latitude')
       RLON=$(echo "$LOC_JSON" | jq -r '.longitude')
       RCITY=$(echo "$LOC_JSON" | jq -r '.city')
+    else
+      # Provider 2 (fallback): ip-api.com (fields: .lat .lon .city; free tier is HTTP-only, ~45 req/min)
+      LOC_JSON=$(curl -s "http://ip-api.com/json/" --max-time 4 2>/dev/null)
+      if [[ -n "$LOC_JSON" ]] && [[ "$(echo "$LOC_JSON" | jq -r '.status // ""' 2>/dev/null)" == "success" ]]; then
+        RLAT=$(echo "$LOC_JSON" | jq -r '.lat')
+        RLON=$(echo "$LOC_JSON" | jq -r '.lon')
+        RCITY=$(echo "$LOC_JSON" | jq -r '.city')
+      fi
+    fi
+
+    if [[ -n "$RLAT" ]] && [[ "$RLAT" != "null" ]]; then
       echo "${RLAT}|${RLON}|${RCITY}" > "$LOCATION_CACHE"
       [[ -n "$CURRENT_IP" ]] && echo "$CURRENT_IP" > "$IP_CACHE"
+      rm -f "$FAIL_CACHE"                     # success clears the backoff
+    else
+      touch "$FAIL_CACHE"                     # both providers failed -> start/refresh backoff
     fi
   fi
   # Use freshly-fetched coords if we got them, else fall back to whatever's cached.
