@@ -1,6 +1,78 @@
 #!/bin/bash
 # ~/.claude/statusline.sh — Labeled-row status bar for Claude Code TUI
 # Caches: location 1hr, weather 10min, git 5s. Target: <50ms on cache hit.
+#
+# ─── Background refresh mode ──────────────────────────────────────────────────
+# Invoked as `"$0" --refresh-location-weather` in a detached background process
+# by the main render path below. Does the blocking network calls (ipify, ipapi,
+# open-meteo) and writes the cache files for the NEXT render to pick up. Never
+# runs inline during a normal render — that's the whole point of this mode.
+if [[ "${1:-}" == "--refresh-location-weather" ]]; then
+  CACHE_DIR="${HOME}/.cache/claude/statusline"
+  mkdir -p "$CACHE_DIR" 2>/dev/null
+  LOCATION_CACHE="${CACHE_DIR}/location"
+  IP_CACHE="${CACHE_DIR}/location_ip"
+  WEATHER_CACHE="${CACHE_DIR}/weather"
+  LOCK_FILE="${CACHE_DIR}/refresh.lock"
+
+  # Best-effort lock: skip if a refresh is already running. Stale lock (older
+  # than 30s — well beyond worst-case curl timeouts below) is treated as dead
+  # and reclaimed rather than blocking forever.
+  if [[ -f "$LOCK_FILE" ]]; then
+    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    LOCK_AGE=999
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      LOCK_MTIME=$(stat -f %m "$LOCK_FILE" 2>/dev/null || echo 0)
+    else
+      LOCK_MTIME=$(stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)
+    fi
+    LOCK_AGE=$(( $(date +%s) - LOCK_MTIME ))
+    if [[ -n "$LOCK_PID" ]] && kill -0 "$LOCK_PID" 2>/dev/null && (( LOCK_AGE < 30 )); then
+      exit 0
+    fi
+  fi
+  echo $$ > "$LOCK_FILE"
+  trap 'rm -f "$LOCK_FILE"' EXIT
+
+  CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+  CACHED_IP=""
+  [[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+
+  NEED_LOCATION=false
+  if [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" != "$CACHED_IP" ]]; then
+    NEED_LOCATION=true
+  elif [[ ! -f "$LOCATION_CACHE" ]]; then
+    NEED_LOCATION=true
+  fi
+
+  RLAT="" RLON=""
+  if [[ "$NEED_LOCATION" == "true" ]]; then
+    LOC_JSON=$(curl -s "https://ipapi.co/json/" --max-time 4 2>/dev/null)
+    if [[ -n "$LOC_JSON" ]] && echo "$LOC_JSON" | jq -e '.latitude' >/dev/null 2>&1; then
+      RLAT=$(echo "$LOC_JSON" | jq -r '.latitude')
+      RLON=$(echo "$LOC_JSON" | jq -r '.longitude')
+      RCITY=$(echo "$LOC_JSON" | jq -r '.city')
+      echo "${RLAT}|${RLON}|${RCITY}" > "$LOCATION_CACHE"
+      [[ -n "$CURRENT_IP" ]] && echo "$CURRENT_IP" > "$IP_CACHE"
+    fi
+  fi
+  # Use freshly-fetched coords if we got them, else fall back to whatever's cached.
+  if [[ -z "$RLAT" ]] && [[ -f "$LOCATION_CACHE" ]]; then
+    IFS='|' read -r RLAT RLON _ < "$LOCATION_CACHE"
+  fi
+  [[ -z "$RLAT" ]] && RLAT="42.44" && RLON="-76.50"
+
+  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${RLAT}&longitude=${RLON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
+  if [[ -n "$WX_JSON" ]] && echo "$WX_JSON" | jq -e '.current' >/dev/null 2>&1; then
+    RTEMP=$(echo "$WX_JSON" | jq -r '.current.temperature_2m // ""' | xargs printf '%.0f' 2>/dev/null)
+    RFEEL=$(echo "$WX_JSON" | jq -r '.current.apparent_temperature // ""' | xargs printf '%.0f' 2>/dev/null)
+    RWIND=$(echo "$WX_JSON" | jq -r '.current.wind_speed_10m // ""' | xargs printf '%.0f' 2>/dev/null)
+    RCODE=$(echo "$WX_JSON" | jq -r '.current.weather_code // 0')
+    echo "${RCODE}|${RTEMP}|${RFEEL}|${RWIND}" > "$WEATHER_CACHE"
+  fi
+
+  exit 0
+fi
 
 # ─── ANSI Colors ─────────────────────────────────────────────────────────────
 RESET='\033[0m'
@@ -108,6 +180,26 @@ else
   AUTH_TAG="OAuth"
 fi
 
+# ─── Plan/seat tier (subscription sessions) ──────────────────────────────────
+# Reads oauthAccount.seatTier from ~/.claude.json so the bar shows Pro/Max/Team,
+# not just "OAuth". Local file read only, no network. Unknown tiers fall through
+# to the raw value with underscores spaced out.
+if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$HOME/.claude.json" ]]; then
+  SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$HOME/.claude.json" 2>/dev/null)
+  case "$SEAT_TIER" in
+    team_standard) PLAN_TAG="Team" ;;
+    team_premium)  PLAN_TAG="Team+" ;;
+    max_20x)       PLAN_TAG="Max20x" ;;
+    max_5x)        PLAN_TAG="Max5x" ;;
+    max)           PLAN_TAG="Max" ;;
+    pro)           PLAN_TAG="Pro" ;;
+    free)          PLAN_TAG="Free" ;;
+    "")            PLAN_TAG="" ;;
+    *)             PLAN_TAG="${SEAT_TIER//_/ }" ;;
+  esac
+  [[ -n "$PLAN_TAG" ]] && AUTH_TAG="OAuth·${PLAN_TAG}"
+fi
+
 # ─── Cornell model rate detection ────────────────────────────────────────────
 # GW_TIERED=true means rates double when input tokens/request exceed 200k
 # Rates: $/1M tokens. T1=normal, T2=over 200k input threshold.
@@ -164,45 +256,36 @@ else
   echo "${BRANCH}|${AHEAD}|${BEHIND}|${MODIFIED}" > "$GIT_CACHE"
 fi
 
-# ─── Location via ipapi.co (HTTPS, cached 1hr, refresh on network/IP change) ─────
+# ─── Location + Weather: render from cache only, NEVER block on network ─────
+# Prior design ran ipify+ipapi+open-meteo curls inline (worst case ~10s). Claude
+# Code kills the statusline command at ~5s, before the cache file was written —
+# so a slow/offline network produced a PERMANENT blank statusline (no cache ever
+# landed, every render re-tried the same blocking calls and got killed again).
+# Fix: render always reads whatever is on disk right now (or shows a placeholder
+# if nothing's there yet) and a detached background process refreshes the cache
+# for the *next* render whenever it's due. Render itself never touches the network.
 LOCATION_CACHE="${CACHE_DIR}/location"
 IP_CACHE="${CACHE_DIR}/location_ip"
-CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
-CACHED_IP=""
-[[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+WEATHER_CACHE="${CACHE_DIR}/weather"
 
-# Refresh if cache stale OR public IP changed (helps travel/hotspot session resumes)
-if cache_fresh "$LOCATION_CACHE" 3600 && [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" == "$CACHED_IP" ]]; then
+if [[ -f "$LOCATION_CACHE" ]]; then
   IFS='|' read -r WX_LAT WX_LON WX_CITY < "$LOCATION_CACHE"
 else
-  LOC_JSON=$(curl -s "https://ipapi.co/json/" --max-time 4 2>/dev/null)
-  if [[ -n "$LOC_JSON" ]] && echo "$LOC_JSON" | jq -e '.latitude' >/dev/null 2>&1; then
-    WX_LAT=$(echo "$LOC_JSON" | jq -r '.latitude')
-    WX_LON=$(echo "$LOC_JSON" | jq -r '.longitude')
-    WX_CITY=$(echo "$LOC_JSON" | jq -r '.city')
-    echo "${WX_LAT}|${WX_LON}|${WX_CITY}" > "$LOCATION_CACHE"
-    [[ -n "$CURRENT_IP" ]] && echo "$CURRENT_IP" > "$IP_CACHE"
-  else
-    WX_LAT="42.44"; WX_LON="-76.50"; WX_CITY="Ithaca"
-  fi
+  WX_LAT="42.44"; WX_LON="-76.50"; WX_CITY="Ithaca"
 fi
 
-# ─── Weather via Open-Meteo (cached 10min) ───────────────────────────────────
 # Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time for day/night)
-WEATHER_CACHE="${CACHE_DIR}/weather"
-if cache_fresh "$WEATHER_CACHE" 600; then
+if [[ -f "$WEATHER_CACHE" ]]; then
   IFS='|' read -r WX_CODE WX_TEMP WX_FEEL WX_WIND < "$WEATHER_CACHE"
 else
-  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${WX_LAT}&longitude=${WX_LON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
-  if [[ -n "$WX_JSON" ]] && echo "$WX_JSON" | jq -e '.current' >/dev/null 2>&1; then
-    WX_TEMP=$(echo "$WX_JSON" | jq -r '.current.temperature_2m // ""' | xargs printf '%.0f' 2>/dev/null)
-    WX_FEEL=$(echo "$WX_JSON" | jq -r '.current.apparent_temperature // ""' | xargs printf '%.0f' 2>/dev/null)
-    WX_WIND=$(echo "$WX_JSON" | jq -r '.current.wind_speed_10m // ""' | xargs printf '%.0f' 2>/dev/null)
-    WX_CODE=$(echo "$WX_JSON" | jq -r '.current.weather_code // 0')
-    echo "${WX_CODE}|${WX_TEMP}|${WX_FEEL}|${WX_WIND}" > "$WEATHER_CACHE"
-  else
-    WX_CODE="-1"; WX_TEMP="N/A"; WX_FEEL=""; WX_WIND=""
-  fi
+  WX_CODE="-1"; WX_TEMP="…"; WX_FEEL=""; WX_WIND="…"
+fi
+
+# Kick a background refresh if either cache is stale/missing. The refresher
+# guards itself with a lock file (see --refresh-location-weather mode above),
+# so it's safe to fire this on every render without piling up processes.
+if ! cache_fresh "$LOCATION_CACHE" 3600 || ! cache_fresh "$WEATHER_CACHE" 600; then
+  ( "$0" --refresh-location-weather >/dev/null 2>&1 & disown ) 2>/dev/null
 fi
 
 # ─── Weather icon (day/night aware) ──────────────────────────────────────────
