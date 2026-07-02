@@ -2,6 +2,13 @@
 # ~/.claude/statusline.sh — Labeled-row status bar for Claude Code TUI
 # Caches: location 1hr, weather 10min, git 5s. Target: <50ms on cache hit.
 #
+# Optional local config (untracked): set STATUSLINE_FALLBACK_CITY / _LAT / _LON
+# to define a fallback location used before the first successful geolocation, or
+# when the geolocation service is unavailable. No personal default is baked into
+# this script. Override the path with STATUSLINE_CONFIG.
+[[ -f "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" ]] && \
+  source "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" 2>/dev/null
+#
 # ─── Background refresh mode ──────────────────────────────────────────────────
 # Invoked as `"$0" --refresh-location-weather` in a detached background process
 # by the main render path below. Does the blocking network calls (ipify, ipapi,
@@ -60,15 +67,19 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
   if [[ -z "$RLAT" ]] && [[ -f "$LOCATION_CACHE" ]]; then
     IFS='|' read -r RLAT RLON _ < "$LOCATION_CACHE"
   fi
-  [[ -z "$RLAT" ]] && RLAT="42.44" && RLON="-76.50"
+  [[ -z "$RLAT" ]] && RLAT="${STATUSLINE_FALLBACK_LAT:-}" && RLON="${STATUSLINE_FALLBACK_LON:-}"
 
-  WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${RLAT}&longitude=${RLON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
-  if [[ -n "$WX_JSON" ]] && echo "$WX_JSON" | jq -e '.current' >/dev/null 2>&1; then
-    RTEMP=$(echo "$WX_JSON" | jq -r '.current.temperature_2m // ""' | xargs printf '%.0f' 2>/dev/null)
-    RFEEL=$(echo "$WX_JSON" | jq -r '.current.apparent_temperature // ""' | xargs printf '%.0f' 2>/dev/null)
-    RWIND=$(echo "$WX_JSON" | jq -r '.current.wind_speed_10m // ""' | xargs printf '%.0f' 2>/dev/null)
-    RCODE=$(echo "$WX_JSON" | jq -r '.current.weather_code // 0')
-    echo "${RCODE}|${RTEMP}|${RFEEL}|${RWIND}" > "$WEATHER_CACHE"
+  # Only fetch weather when we have coordinates (from geolocation, cache, or a
+  # configured fallback). No coords → skip; the render shows a placeholder.
+  if [[ -n "$RLAT" ]] && [[ -n "$RLON" ]]; then
+    WX_JSON=$(curl -s "https://api.open-meteo.com/v1/forecast?latitude=${RLAT}&longitude=${RLON}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph" --max-time 4 2>/dev/null)
+    if [[ -n "$WX_JSON" ]] && echo "$WX_JSON" | jq -e '.current' >/dev/null 2>&1; then
+      RTEMP=$(echo "$WX_JSON" | jq -r '.current.temperature_2m // ""' | xargs printf '%.0f' 2>/dev/null)
+      RFEEL=$(echo "$WX_JSON" | jq -r '.current.apparent_temperature // ""' | xargs printf '%.0f' 2>/dev/null)
+      RWIND=$(echo "$WX_JSON" | jq -r '.current.wind_speed_10m // ""' | xargs printf '%.0f' 2>/dev/null)
+      RCODE=$(echo "$WX_JSON" | jq -r '.current.weather_code // 0')
+      echo "${RCODE}|${RTEMP}|${RFEEL}|${RWIND}" > "$WEATHER_CACHE"
+    fi
   fi
 
   exit 0
@@ -271,7 +282,11 @@ WEATHER_CACHE="${CACHE_DIR}/weather"
 if [[ -f "$LOCATION_CACHE" ]]; then
   IFS='|' read -r WX_LAT WX_LON WX_CITY < "$LOCATION_CACHE"
 else
-  WX_LAT="42.44"; WX_LON="-76.50"; WX_CITY="Ithaca"
+  # No cache yet. Fall back to a configured location if set, else a neutral
+  # placeholder — no personal default is hardcoded here.
+  WX_LAT="${STATUSLINE_FALLBACK_LAT:-}"
+  WX_LON="${STATUSLINE_FALLBACK_LON:-}"
+  WX_CITY="${STATUSLINE_FALLBACK_CITY:-…}"
 fi
 
 # Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time for day/night)
