@@ -243,7 +243,8 @@ fi
 # ─── Cornell model rate detection ────────────────────────────────────────────
 # Flat $/1M-token rates (input/output). Cornell Gateway moved off tiered T1/T2
 # pricing to flat per-model rates; verified against the live Confluence pricing
-# page (541787315, v180) on 2026-07-09 — the old T1/T2 split no longer applies.
+# page (541787315, v187) on 2026-07-20 — the old T1/T2 split no longer applies.
+# All 11 model rates matched Confluence exactly on that check (no drift).
 # Matches both native Anthropic model IDs (claude-sonnet-4-6) and the older
 # gateway-prefixed dot style (anthropic.claude-4.6-sonnet), in case either
 # ever shows up in .model.display_name.
