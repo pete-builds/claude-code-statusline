@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.claude/statusline.sh — Labeled-row status bar for Claude Code TUI
 # Caches: location 1hr, weather 10min, git 5s. Target: <50ms on cache hit.
 #
@@ -241,20 +241,38 @@ if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$HOME/.claude.json" ]]; then
 fi
 
 # ─── Cornell model rate detection ────────────────────────────────────────────
-# GW_TIERED=true means rates double when input tokens/request exceed 200k
-# Rates: $/1M tokens. T1=normal, T2=over 200k input threshold.
-GW_TIERED=false
+# Flat $/1M-token rates (input/output). Cornell Gateway moved off tiered T1/T2
+# pricing to flat per-model rates; verified against the live Confluence pricing
+# page (541787315, v180) on 2026-07-09 — the old T1/T2 split no longer applies.
+# Matches both native Anthropic model IDs (claude-sonnet-4-6) and the older
+# gateway-prefixed dot style (anthropic.claude-4.6-sonnet), in case either
+# ever shows up in .model.display_name.
 GW_RATE_IN=""; GW_RATE_OUT=""
-GW_RATE2_IN=""; GW_RATE2_OUT=""
 if [[ "$AUTH_TAG" == GW:* ]]; then
   case "$MODEL" in
-    *claude-4.6-opus*)
-      GW_TIERED=true; GW_RATE_IN=5; GW_RATE_OUT=25; GW_RATE2_IN=10; GW_RATE2_OUT=37.50 ;;
-    *claude-4.5-opus*|*claude-4.1-opus*|*claude-4-opus*)
+    *claude-opus-4-1*|*claude-4.1-opus*|*claude-4-opus*)
+      GW_RATE_IN=15; GW_RATE_OUT=75 ;;
+    *claude-opus-4-5*|*claude-4.5-opus*)
       GW_RATE_IN=5; GW_RATE_OUT=25 ;;
-    *claude-4.6-sonnet*|*claude-4.5-sonnet*|*claude-4-sonnet*|*claude-3.7-sonnet*)
-      GW_TIERED=true; GW_RATE_IN=3; GW_RATE_OUT=15; GW_RATE2_IN=6; GW_RATE2_OUT=22.50 ;;
-    *claude-4.5-haiku*|*claude-3.5-haiku*|*claude-3-haiku*)
+    *claude-opus-4-6*|*claude-4.6-opus*)
+      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
+    *claude-opus-4-7*)
+      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
+    *claude-opus-4-8*)
+      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
+    *claude-sonnet-5*)
+      # Promo rate through 2026-08-31; reverts to $3/$15 on 2026-09-01.
+      GW_RATE_IN=2; GW_RATE_OUT=10 ;;
+    *claude-sonnet-4-5*|*claude-4.5-sonnet*)
+      GW_RATE_IN=3; GW_RATE_OUT=15 ;;
+    *claude-sonnet-4-6*|*claude-4.6-sonnet*)
+      GW_RATE_IN=3; GW_RATE_OUT=15 ;;
+    *claude-sonnet-4*|*claude-4-sonnet*)
+      # Legacy; retires 2026-07-14.
+      GW_RATE_IN=3; GW_RATE_OUT=15 ;;
+    *claude-fable-5*)
+      GW_RATE_IN=10; GW_RATE_OUT=50 ;;
+    *claude-haiku-4-5*|*claude-4.5-haiku*)
       GW_RATE_IN=1; GW_RATE_OUT=5 ;;
   esac
 fi
@@ -396,10 +414,14 @@ DUR_FMT=$(fmt_duration "$DURATION_MS")
 # ─── Token format ─────────────────────────────────────────────────────────────
 fmt_tokens() {
   local n=$1
+  # Portable on both macOS bash 3.2 and NixOS: `bc` isn't guaranteed in PATH
+  # on NixOS, and the escaped-string awk form (awk "BEGIN {printf \"%.1f\"...")
+  # mangles under Mac bash 3.2's quoting, producing "0.0k0.0k". Passing the
+  # value via -v with a single-quoted program avoids both failure modes.
   if (( n >= 1000000 )); then
-    printf '%.1fM' "$(echo "scale=1; $n / 1000000" | bc)"
+    printf '%.1fM' "$(awk -v n="$n" 'BEGIN{printf "%.1f", n/1000000}')"
   elif (( n >= 1000 )); then
-    printf '%.1fk' "$(echo "scale=1; $n / 1000" | bc)"
+    printf '%.1fk' "$(awk -v n="$n" 'BEGIN{printf "%.1f", n/1000}')"
   else
     printf '%d' "$n"
   fi
@@ -447,18 +469,13 @@ for ((i=0; i<FILLED; i++)); do BAR_FILL+="●"; done
 for ((i=0; i<EMPTY; i++)); do BAR_EMPTY+="○"; done
 CTX_BAR="${BAR_COLOR}${BAR_FILL}${DIM}${BAR_EMPTY}${RESET}"
 
-# ─── Cornell tier annotation ─────────────────────────────────────────────────
-# Shows T1/T2 tier label + input/output rates on the CONTEXT row for gateway sessions.
-# T2 triggers on exceeds_200k_tokens boolean from session JSON (per-request signal).
+# ─── Cornell gateway rate annotation ─────────────────────────────────────────
+# Shows the flat $/1M-token input/output rate on the CONTEXT row for gateway
+# sessions. Display only — see GW_RATE_IN/GW_RATE_OUT above for the source of
+# these numbers and why there's no more T1/T2 split.
 CTX_TIER=""
 if [[ "$AUTH_TAG" == GW:* ]] && [[ -n "$GW_RATE_IN" ]]; then
-  if [[ "$GW_TIERED" == true ]] && [[ "$EXCEEDS_200K" == "true" ]]; then
-    CTX_TIER="${PIPE}${BRED}⚠ T2 \$${GW_RATE2_IN}/\$${GW_RATE2_OUT}${RESET}"
-  elif [[ "$GW_TIERED" == true ]]; then
-    CTX_TIER="${PIPE}${BGREEN}T1 \$${GW_RATE_IN}/\$${GW_RATE_OUT}${RESET}"
-  else
-    CTX_TIER="${PIPE}${DIM}\$${GW_RATE_IN}/\$${GW_RATE_OUT} flat${RESET}"
-  fi
+  CTX_TIER="${PIPE}${DIM}\$${GW_RATE_IN}/\$${GW_RATE_OUT} flat${RESET}"
 fi
 
 # ─── Cost display ─────────────────────────────────────────────────────────────
@@ -507,7 +524,7 @@ fmt_reset_time() {
   now_epoch=$(date +%s)
   delta=$(( epoch - now_epoch ))
   if (( delta < 86400 )); then
-    fmt='+%-I%p'
+    fmt='+%-I:%M%p'
   else
     fmt='+%b %-d %-I%p'
   fi
