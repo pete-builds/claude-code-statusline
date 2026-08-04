@@ -214,6 +214,13 @@ PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
 if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
   GW_HOST=$(echo "$ANTHROPIC_BASE_URL" | sed -E 's|https?://||; s|/.*||' | awk -F. '{print $(NF-1)}')
   AUTH_TAG="GW:${GW_HOST}"
+  # Optional per-key label set by a launcher or shell alias
+  # (e.g. `alias claude-work='ANTHROPIC_KEY_LABEL=work claude'`). Useful when
+  # you run more than one key against the same gateway and want the bar to
+  # show which one is active. Trusted verbatim; capped to 16 chars.
+  if [[ -n "${ANTHROPIC_KEY_LABEL:-}" ]]; then
+    AUTH_TAG+="·${ANTHROPIC_KEY_LABEL:0:16}"
+  fi
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   AUTH_TAG="API:..${ANTHROPIC_API_KEY: -4}"
 else

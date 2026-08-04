@@ -82,6 +82,45 @@ Start a new Claude Code session — the statusline appears automatically.
 | `API:..xxxx` | Direct Anthropic API key (last 4 chars) |
 | `GW:hostname` | API gateway (last 4 chars of key, gateway hostname shown) |
 
+### Labeling gateway keys
+
+If you run more than one key against the same gateway (e.g. a personal key and
+a work key that both go through `litellm.example.com`), set
+`ANTHROPIC_KEY_LABEL` before launching Claude Code and the label appears after
+the gateway host on the ENV row: `GW:example·work`. Capped at 16 characters.
+
+The usual pattern is a shell alias or wrapper that exports the label alongside
+the base URL and key it belongs to.
+
+**Bash / zsh (Linux, macOS, WSL, Git Bash):**
+
+```bash
+alias claude-work='ANTHROPIC_BASE_URL=https://litellm.example.com \
+                   ANTHROPIC_AUTH_TOKEN=sk-... \
+                   ANTHROPIC_KEY_LABEL=work claude'
+alias claude-personal='ANTHROPIC_BASE_URL=https://litellm.example.com \
+                       ANTHROPIC_AUTH_TOKEN=sk-... \
+                       ANTHROPIC_KEY_LABEL=personal claude'
+```
+
+**PowerShell (Windows):** aliases can't set env vars inline, so use a function:
+
+```powershell
+function claude-work {
+  $env:ANTHROPIC_BASE_URL   = "https://litellm.example.com"
+  $env:ANTHROPIC_AUTH_TOKEN = "sk-..."
+  $env:ANTHROPIC_KEY_LABEL  = "work"
+  claude @args
+}
+```
+
+**Windows cmd:** use a `.bat` wrapper that `set`s the three variables and then
+calls `claude %*`.
+
+Nothing is validated server-side; the label is a local display hint. If
+`ANTHROPIC_KEY_LABEL` is unset, the ENV row shows `GW:host` on its own as
+before.
+
 ### Context bar colors
 
 The bar fills left to right as your context window fills up. Color indicates
