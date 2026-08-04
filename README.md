@@ -121,6 +121,30 @@ Nothing is validated server-side; the label is a local display hint. If
 `ANTHROPIC_KEY_LABEL` is unset, the ENV row shows `GW:host` on its own as
 before.
 
+### Notes for Cornell AI Gateway users
+
+If your `ANTHROPIC_BASE_URL` points at `https://api.ai.it.cornell.edu/`, the
+ENV row shows `GW:cornell` (the parser takes the second-to-last dotted
+segment of the host).
+
+The gateway rate table in `statusline.sh` is preloaded with Cornell's flat
+$/1M-token pricing and only fires when `GW_HOST == "cornell"`, so no other
+gateway is affected. When rates change, edit the `case "$MODEL"` block —
+values were last verified against the Confluence pricing page (541787315,
+v187) on 2026-07-20.
+
+`ANTHROPIC_KEY_LABEL` is handy alongside the bridge-keychain flow when you
+run more than one Cornell key (e.g. personal vs a shared project key)
+against the same base URL — set it in whichever alias exports the key and
+the bar shows `GW:cornell·<label>`.
+
+### Adapting the rate table for your own gateway
+
+Non-Cornell users can copy the pattern. Replace `"cornell"` in the guard
+with the second-to-last hostname segment of your gateway (whatever appears
+after `GW:` in the bar), then edit the `case "$MODEL"` block to match your
+gateway's model IDs and rates.
+
 ### Context bar colors
 
 The bar fills left to right as your context window fills up. Color indicates

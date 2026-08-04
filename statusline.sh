@@ -247,16 +247,21 @@ if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$HOME/.claude.json" ]]; then
   [[ -n "$PLAN_TAG" ]] && AUTH_TAG="OAuth·${PLAN_TAG}"
 fi
 
-# ─── Cornell model rate detection ────────────────────────────────────────────
-# Flat $/1M-token rates (input/output). Cornell Gateway moved off tiered T1/T2
-# pricing to flat per-model rates; verified against the live Confluence pricing
-# page (541787315, v187) on 2026-07-20 — the old T1/T2 split no longer applies.
-# All 11 model rates matched Confluence exactly on that check (no drift).
-# Matches both native Anthropic model IDs (claude-sonnet-4-6) and the older
-# gateway-prefixed dot style (anthropic.claude-4.6-sonnet), in case either
-# ever shows up in .model.display_name.
+# ─── Gateway rate table (Cornell example) ───────────────────────────────────
+# Optional per-model $/1M-token rates surfaced on the CONTEXT row for gateway
+# sessions. The table below is Cornell's AI Gateway (api.ai.it.cornell.edu),
+# gated on GW_HOST == "cornell" so nothing here affects other gateways.
+#
+# To adapt this for your own gateway: replace "cornell" in the guard with your
+# gateway's second-to-last hostname segment (whatever shows after "GW:" in the
+# bar), then edit the case block to match your gateway's model IDs and rates.
+#
+# Cornell rates verified against the live Confluence pricing page (541787315,
+# v187) on 2026-07-20 — all 11 model rates matched exactly. Matches both the
+# native Anthropic model IDs (claude-sonnet-4-6) and the older gateway-prefixed
+# dot style (anthropic.claude-4.6-sonnet).
 GW_RATE_IN=""; GW_RATE_OUT=""
-if [[ "$AUTH_TAG" == GW:* ]]; then
+if [[ "$GW_HOST" == "cornell" ]]; then
   case "$MODEL" in
     *claude-opus-4-1*|*claude-4.1-opus*|*claude-4-opus*)
       GW_RATE_IN=15; GW_RATE_OUT=75 ;;
