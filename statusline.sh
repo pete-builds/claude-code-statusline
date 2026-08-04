@@ -318,8 +318,10 @@ if cache_fresh "$GIT_CACHE" 5; then
 else
   BRANCH=$(git -C "$WORK_DIR" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
   if [[ -n "$BRANCH" ]]; then
-    AHEAD=$(git -C "$WORK_DIR" --no-optional-locks rev-list @{upstream}..HEAD 2>/dev/null | wc -l | tr -d ' ')
-    BEHIND=$(git -C "$WORK_DIR" --no-optional-locks rev-list HEAD..@{upstream} 2>/dev/null | wc -l | tr -d ' ')
+    # @{upstream} is git revision syntax, quoted so the shell (and shellcheck,
+    # SC1083) treats the braces as literal rather than a brace expansion.
+    AHEAD=$(git -C "$WORK_DIR" --no-optional-locks rev-list '@{upstream}..HEAD' 2>/dev/null | wc -l | tr -d ' ')
+    BEHIND=$(git -C "$WORK_DIR" --no-optional-locks rev-list 'HEAD..@{upstream}' 2>/dev/null | wc -l | tr -d ' ')
     MODIFIED=$(git -C "$WORK_DIR" --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   else
     AHEAD=0; BEHIND=0; MODIFIED=0
@@ -339,21 +341,27 @@ LOCATION_CACHE="${CACHE_DIR}/location"
 IP_CACHE="${CACHE_DIR}/location_ip"
 WEATHER_CACHE="${CACHE_DIR}/weather"
 
+# Cache format is LAT|LON|CITY. Only the city is rendered; the coordinates are
+# consumed by the background refresher (see RLAT/RLON above), which reads
+# STATUSLINE_FALLBACK_LAT/_LON itself. Discarding the first two fields here
+# rather than binding dead names keeps this honest about what the render path
+# actually uses.
 if [[ -f "$LOCATION_CACHE" ]]; then
-  IFS='|' read -r WX_LAT WX_LON WX_CITY < "$LOCATION_CACHE"
+  IFS='|' read -r _ _ WX_CITY < "$LOCATION_CACHE"
 else
-  # No cache yet. Fall back to a configured location if set, else a neutral
+  # No cache yet. Fall back to a configured city if set, else a neutral
   # placeholder — no personal default is hardcoded here.
-  WX_LAT="${STATUSLINE_FALLBACK_LAT:-}"
-  WX_LON="${STATUSLINE_FALLBACK_LON:-}"
   WX_CITY="${STATUSLINE_FALLBACK_CITY:-…}"
 fi
 
-# Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time for day/night)
+# Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time
+# for day/night). FEEL is discarded positionally: the refresher still caches
+# apparent temperature, but the rendered LOC row shows only TEMP and WIND, so
+# binding a name for it would assert a use that does not exist.
 if [[ -f "$WEATHER_CACHE" ]]; then
-  IFS='|' read -r WX_CODE WX_TEMP WX_FEEL WX_WIND < "$WEATHER_CACHE"
+  IFS='|' read -r WX_CODE WX_TEMP _ WX_WIND < "$WEATHER_CACHE"
 else
-  WX_CODE="-1"; WX_TEMP="…"; WX_FEEL=""; WX_WIND="…"
+  WX_CODE="-1"; WX_TEMP="…"; WX_WIND="…"
 fi
 
 # Kick a background refresh if either cache is stale/missing. The refresher

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run shellcheck
+        # warning severity, not error: the repo is clean at this level, so
+        # anything new that trips it is a regression rather than pre-existing
+        # noise to be ignored.
+        run: shellcheck --severity=warning statusline.sh setup.sh tests/*.sh
+
+  test:
+    name: Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # statusline.sh branches on Darwin vs Linux for battery and date
+        # handling, so both need to run.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install jq
+        # Preinstalled on both runner images today; asserted rather than
+        # assumed, so a runner image change fails here with a clear reason
+        # instead of inside a test.
+        run: jq --version
+
+      - name: Run test suite
+        run: |
+          set -uo pipefail
+          failed=0
+          for t in tests/*.sh; do
+            printf '%-50s ' "$t"
+            if bash "$t" > /tmp/out.log 2>&1; then
+              echo "PASS"
+            else
+              echo "FAIL"
+              sed 's/^/    /' /tmp/out.log
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+  render:
+    name: Render smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Renders every row without erroring
+        # The unit tests cover individual decision functions. This asserts the
+        # script runs end to end and emits all six labelled rows, which is what
+        # actually breaks when a variable rename slips through.
+        run: |
+          set -euo pipefail
+          out=$(printf '%s' '{"model":{"display_name":"Opus 5"},"workspace":{"current_dir":"'"$PWD"'"}}' \
+            | bash statusline.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+          echo "$out"
+          for row in "LOC:" "ENV:" "CONTEXT:" "GIT:" "SESSION:"; do
+            printf '%s' "$out" | grep -q "$row" || { echo "::error::missing row: $row"; exit 1; }
+          done
