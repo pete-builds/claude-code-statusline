@@ -145,6 +145,52 @@ with the second-to-last hostname segment of your gateway (whatever appears
 after `GW:` in the bar), then edit the `case "$MODEL"` block to match your
 gateway's model IDs and rates.
 
+### Active skill marker
+
+The ENV row can show which Skill (plugin skill or slash command) was most
+recently invoked as `🔌 <name>` for a short window after it runs. Useful when
+you want the bar to reflect that a plugin like `codex:rescue` or `code-review`
+is what's driving the current turn.
+
+The Skill tool doesn't propagate into the statusline JSON payload, so a
+PostToolUse hook stamps a marker file that the statusline reads on the next
+render. The marker is treated as fresh for 60 seconds; tune `MARKER_TTL_SECS`
+in `statusline.sh` if you want it shorter or longer.
+
+**Enable it:**
+
+1. Copy the hook script:
+
+```bash
+mkdir -p ~/.claude/hooks
+cp hooks/skill-marker.sh ~/.claude/hooks/skill-marker.sh
+chmod +x ~/.claude/hooks/skill-marker.sh
+```
+
+2. Add a PostToolUse hook for the Skill tool to `~/.claude/settings.json`.
+   If your `hooks` block already exists, merge this entry into it:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/skill-marker.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook is opt-in — the statusline silently no-ops when the marker file is
+absent or stale, so leaving it unwired costs nothing.
+
 ### Context bar colors
 
 The bar fills left to right as your context window fills up. Color indicates

@@ -526,7 +526,7 @@ if [[ -n "$BRANCH" ]]; then
   else
     MOD_DISPLAY="${DIM}clean${RESET}"
   fi
-  GIT_ROW="${BMAGENTA}◆ GIT:${RESET} ${WHITE}${PROJ_NAME}${RESET}${PIPE}Branch: ${BRANCH_DISPLAY}${PIPE}${SYNC_DISPLAY}${PIPE}${MOD_DISPLAY}"
+  GIT_ROW="${BMAGENTA}◆ GIT:${RESET} ${WHITE}${PROJ_NAME}${RESET}${PIPE}${BRANCH_DISPLAY}${PIPE}${SYNC_DISPLAY}${PIPE}${MOD_DISPLAY}"
 else
   GIT_ROW="${BMAGENTA}◆ GIT:${RESET} ${DIM}no git${RESET}"
 fi
@@ -602,8 +602,22 @@ AGENT_PART=""
 WORKTREE_PART=""
 [[ -n "$WORKTREE_NAME" ]] && [[ "$WORKTREE_NAME" != "null" ]] && WORKTREE_PART="${WORKTREE_NAME}${DIM}(${WORKTREE_BRANCH})${RESET}"
 
+# ─── Active skill marker (written by skill-marker.sh PostToolUse hook) ───────
+# The Skill tool doesn't propagate into the statusline JSON payload, so we let
+# a hook stamp a marker file and read it here. Fresh window is short so the
+# indicator fades on its own once the skill has done its work.
+SKILL_MARKER="${CACHE_DIR}/active_skill"
+MARKER_TTL_SECS=60
+SKILL_PART=""
+if cache_fresh "$SKILL_MARKER" "$MARKER_TTL_SECS"; then
+  IFS='|' read -r ACTIVE_SKILL _ < "$SKILL_MARKER" 2>/dev/null
+  if [[ -n "$ACTIVE_SKILL" ]]; then
+    SKILL_PART="${BYELLOW}🔌 ${ACTIVE_SKILL}${RESET}"
+  fi
+fi
+
 # ─── Session row ──────────────────────────────────────────────────────────────
-SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET} lines${PIPE}${WHITE}Dur ${DUR_FMT}${RESET}${PIPE}${DIM}#${SESSION_SHORT}${RESET}"
+SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-${LINES_DEL}${RESET}${PIPE}${WHITE}Dur ${DUR_FMT}${RESET}"
 [[ -n "$BATT" ]] && SESSION_ROW+="${PIPE}${BATT}"
 [[ -n "$COST_PART" ]] && SESSION_ROW+="$COST_PART"
 [[ -n "$RL_PART" ]] && SESSION_ROW+="${PIPE}${RL_PART}"
@@ -612,6 +626,7 @@ SESSION_ROW="${BGREEN}+ SESSION:${RESET} ${BGREEN}+${LINES_ADD}${RESET} ${RED}-$
 ENV_EXTRAS=""
 [[ -n "$VIM_PART" ]] && ENV_EXTRAS+="${PIPE}${VIM_PART}"
 [[ -n "$AGENT_PART" ]] && ENV_EXTRAS+="${PIPE}${AGENT_PART}"
+[[ -n "$SKILL_PART" ]] && ENV_EXTRAS+="${PIPE}${SKILL_PART}"
 
 # ─── Output ───────────────────────────────────────────────────────────────────
 echo -e "${DIM}─── ${RESET}${BCYAN}| CC STATUSLINE |${RESET}${DIM} ────────────────────────────────────────────────────${RESET}"
