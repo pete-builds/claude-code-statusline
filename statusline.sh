@@ -164,6 +164,34 @@ eval "$(echo "$INPUT" | jq -r '
 ' | tr ',' '\n')"
 SESSION_SHORT="${SESSION_ID:0:7}"
 
+# --- Force every value that reaches bash arithmetic to be an integer ------------
+# `(( ))` does not compare text, it EVALUATES it, and that evaluation still
+# performs command substitution inside an array subscript. A value shaped like
+# `x[$(cmd)]` therefore ran cmd, silently: the arithmetic fails closed to 0 and
+# takes the false branch, so nothing looked wrong.
+#
+# jq's `// 0` is null-coalescing, not a type guard -- a string passes straight
+# through it. And @sh quoting protects the eval above, not this second evaluator.
+#
+# The correct coercion was already in this file at the rate-limit percentage; it
+# just was not applied to its neighbours. This is that same one-liner, applied to
+# every field that reaches (( )).
+_int() { printf '%.0f' "${1:-0}" 2>/dev/null || echo 0; }
+CTX_WIN_SIZE="$(_int "$CTX_WIN_SIZE")"
+IN_TOKENS="$(_int "$IN_TOKENS")"
+OUT_TOKENS="$(_int "$OUT_TOKENS")"
+CUR_IN_TOKENS="$(_int "$CUR_IN_TOKENS")"
+CUR_CACHE_CREATE="$(_int "$CUR_CACHE_CREATE")"
+CUR_CACHE_READ="$(_int "$CUR_CACHE_READ")"
+DURATION_MS="$(_int "$DURATION_MS")"
+LINES_ADD="$(_int "$LINES_ADD")"
+LINES_DEL="$(_int "$LINES_DEL")"
+# resets_at is an epoch seconds value that reaches (( )) in fmt_reset_time.
+[[ -n "$RL_5H_RESETS" ]] && RL_5H_RESETS="$(_int "$RL_5H_RESETS")"
+[[ -n "$RL_7D_RESETS" ]] && RL_7D_RESETS="$(_int "$RL_7D_RESETS")"
+
+
+
 # ─── Context window detection ────────────────────────────────────────────────
 # Priority cascade. Claude Code bug anthropics/claude-code#34143 (still open)
 # makes context_window_size report 200000 on Max plans for 1M-capable models,
@@ -564,6 +592,27 @@ fmt_reset_time() {
     fi
   fi
 }
+
+# --- Neutralise control characters in anything we did not author ----------------
+# Every row below is printed with `echo -e`, which interprets backslash escapes.
+# Values reaching those rows are not all ours: WX_CITY comes from a geolocation
+# API whose fallback provider is plain HTTP, so anyone on the network path can
+# supply it; PROJ_NAME is a directory basename, and directory names may contain
+# literal backslashes; MODEL and BRANCH are supplied by Claude Code and git.
+#
+# A value containing the text \033 therefore became a real ESC byte in the
+# user's terminal: enough to recolour the bar, to emit an OSC 52 clipboard
+# sequence in terminals that allow it, or -- via \c -- to truncate the row and
+# swallow the modified-file count.
+#
+# Stripping backslashes is deliberate rather than escaping them: none of these
+# values has any legitimate reason to contain one, and a strip cannot itself be
+# escaped around.
+strip_ctl() { printf '%s' "${1//\\/}" | tr -d '\000-\037'; }
+WX_CITY="$(strip_ctl "$WX_CITY")"
+MODEL="$(strip_ctl "$MODEL")"
+PROJ_NAME="$(strip_ctl "$PROJ_NAME")"
+BRANCH="$(strip_ctl "$BRANCH")"
 
 RL_PART=""
 if [[ -n "$RL_5H_PCT" ]] && [[ "$RL_5H_PCT" != "null" ]]; then
