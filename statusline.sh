@@ -190,6 +190,30 @@ LINES_DEL="$(_int "$LINES_DEL")"
 [[ -n "$RL_5H_RESETS" ]] && RL_5H_RESETS="$(_int "$RL_5H_RESETS")"
 [[ -n "$RL_7D_RESETS" ]] && RL_7D_RESETS="$(_int "$RL_7D_RESETS")"
 
+# --- Neutralise control characters in anything we did not author ----------------
+# Every rendered row is printed with `echo -e`, which interprets backslash
+# escapes. Values reaching those rows are not all ours: WX_CITY comes from a
+# geolocation API whose fallback provider is plain HTTP, so anyone on the network
+# path can supply it; PROJ_NAME is a directory basename, and directory names may
+# contain literal backslashes; MODEL and BRANCH are supplied by Claude Code and
+# git.
+#
+# A value containing the text \033 therefore became a real ESC byte in the
+# user's terminal: enough to recolour the bar, to emit an OSC 52 clipboard
+# sequence in terminals that allow it, or -- via \c -- to truncate the row and
+# swallow the modified-file count.
+#
+# Stripping backslashes is deliberate rather than escaping them: none of these
+# values has any legitimate reason to contain one, and a strip cannot itself be
+# escaped around.
+#
+# Each value is scrubbed at the point it is read, NOT in one block before the
+# echoes. PROJ_NAME and BRANCH are baked into GIT_ROW and BRANCH_DISPLAY well
+# before the render, so a single late block sanitised a copy nobody printed and
+# left the escape in the row: coverage on paper, no-op in the terminal.
+strip_ctl() { printf '%s' "${1//\\/}" | tr -d '\000-\037'; }
+MODEL="$(strip_ctl "$MODEL")"
+
 
 
 # ─── Context window detection ────────────────────────────────────────────────
@@ -237,6 +261,7 @@ fi
 
 WORK_DIR="${PROJ_DIR:-$CWD}"
 PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
+PROJ_NAME="$(strip_ctl "$PROJ_NAME")"
 
 # ─── Auth detection ──────────────────────────────────────────────────────────
 if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
@@ -356,6 +381,7 @@ else
   fi
   echo "${BRANCH}|${AHEAD}|${BEHIND}|${MODIFIED}" > "$GIT_CACHE"
 fi
+BRANCH="$(strip_ctl "$BRANCH")"
 
 # ─── Location + Weather: render from cache only, NEVER block on network ─────
 # Prior design ran ipify+ipapi+open-meteo curls inline (worst case ~10s). Claude
@@ -381,6 +407,7 @@ else
   # placeholder — no personal default is hardcoded here.
   WX_CITY="${STATUSLINE_FALLBACK_CITY:-…}"
 fi
+WX_CITY="$(strip_ctl "$WX_CITY")"
 
 # Cache stores raw components: CODE|TEMP|FEEL|WIND (icon derived at render time
 # for day/night). FEEL is discarded positionally: the refresher still caches
@@ -593,26 +620,6 @@ fmt_reset_time() {
   fi
 }
 
-# --- Neutralise control characters in anything we did not author ----------------
-# Every row below is printed with `echo -e`, which interprets backslash escapes.
-# Values reaching those rows are not all ours: WX_CITY comes from a geolocation
-# API whose fallback provider is plain HTTP, so anyone on the network path can
-# supply it; PROJ_NAME is a directory basename, and directory names may contain
-# literal backslashes; MODEL and BRANCH are supplied by Claude Code and git.
-#
-# A value containing the text \033 therefore became a real ESC byte in the
-# user's terminal: enough to recolour the bar, to emit an OSC 52 clipboard
-# sequence in terminals that allow it, or -- via \c -- to truncate the row and
-# swallow the modified-file count.
-#
-# Stripping backslashes is deliberate rather than escaping them: none of these
-# values has any legitimate reason to contain one, and a strip cannot itself be
-# escaped around.
-strip_ctl() { printf '%s' "${1//\\/}" | tr -d '\000-\037'; }
-WX_CITY="$(strip_ctl "$WX_CITY")"
-MODEL="$(strip_ctl "$MODEL")"
-PROJ_NAME="$(strip_ctl "$PROJ_NAME")"
-BRANCH="$(strip_ctl "$BRANCH")"
 
 RL_PART=""
 if [[ -n "$RL_5H_PCT" ]] && [[ "$RL_5H_PCT" != "null" ]]; then
