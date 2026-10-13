@@ -309,37 +309,43 @@ fi
 # gateway's second-to-last hostname segment (whatever shows after "GW:" in the
 # bar), then edit the case block to match your gateway's model IDs and rates.
 #
-# Cornell rates verified against the live Confluence pricing page (541787315,
-# v187) on 2026-07-20 — all 11 model rates matched exactly. Matches both the
-# native Anthropic model IDs (claude-sonnet-4-6) and the older gateway-prefixed
-# dot style (anthropic.claude-4.6-sonnet).
-GW_RATE_IN=""; GW_RATE_OUT=""
+# MATCHING: the session JSON gives us .model.display_name, which is a HUMAN
+# label ("Opus 5 (1M context)", "Fable 5.1", "Sonnet 4.6") — NOT a model ID.
+# An earlier version of this table matched only ID forms (claude-opus-4-7), so
+# every pattern missed and the rate annotation silently never rendered. To make
+# both forms work, MODEL is normalized to lowercase-with-dashes first, so
+# "Opus 5 (1M context)", "claude-opus-5" and "anthropic.claude-5-opus" all
+# reduce to something containing "opus-5". Verify any change to this block with
+# the control in scripts/test-statusline-rates.sh — a table that matches
+# nothing looks identical to a session with no rate data.
+#
+# Cornell rates verified 2026-09-02 against BOTH authoritative sources, which
+# agreed on all 13 Claude models:
+#   1. Confluence pricing page 541787315 v211, "Chat (Text / Image to Text)".
+#   2. The gateway's own live billing config: GET /v1/model/info.
+# NOTE: that page also has a "Batch Processing (50% cost)" table with exactly
+# half these numbers. It is NOT interactive pricing. Do not read rates from it.
+GW_RATE_IN=""; GW_RATE_OUT=""; GW_RATE_SCOPE="flat"
 if [[ "$GW_HOST" == "cornell" ]]; then
-  case "$MODEL" in
-    *claude-opus-4-1*|*claude-4.1-opus*|*claude-4-opus*)
-      GW_RATE_IN=15; GW_RATE_OUT=75 ;;
-    *claude-opus-4-5*|*claude-4.5-opus*)
-      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
-    *claude-opus-4-6*|*claude-4.6-opus*)
-      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
-    *claude-opus-4-7*)
-      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
-    *claude-opus-4-8*)
-      GW_RATE_IN=5; GW_RATE_OUT=25 ;;
-    *claude-sonnet-5*)
-      # Promo rate through 2026-08-31; reverts to $3/$15 on 2026-09-01.
-      GW_RATE_IN=2; GW_RATE_OUT=10 ;;
-    *claude-sonnet-4-5*|*claude-4.5-sonnet*)
-      GW_RATE_IN=3; GW_RATE_OUT=15 ;;
-    *claude-sonnet-4-6*|*claude-4.6-sonnet*)
-      GW_RATE_IN=3; GW_RATE_OUT=15 ;;
-    *claude-sonnet-4*|*claude-4-sonnet*)
-      # Legacy; retires 2026-07-14.
-      GW_RATE_IN=3; GW_RATE_OUT=15 ;;
-    *claude-fable-5*)
-      GW_RATE_IN=10; GW_RATE_OUT=50 ;;
-    *claude-haiku-4-5*|*claude-4.5-haiku*)
-      GW_RATE_IN=1; GW_RATE_OUT=5 ;;
+  # Normalize: lowercase, then spaces and dots to dashes. Keeps one canonical
+  # dash form so each rate needs one pattern instead of three.
+  MODEL_KEY=$(echo "$MODEL" | tr '[:upper:]' '[:lower:]' | tr ' .' '--')
+  # Order matters: 4.x variants are tested before the bare "-5" patterns.
+  case "$MODEL_KEY" in
+    *opus-4-1*|*4-1-opus*)       GW_RATE_IN=15; GW_RATE_OUT=75 ;;   # deprecated
+    *opus-4-5*|*4-5-opus*)       GW_RATE_IN=5;  GW_RATE_OUT=25 ;;
+    *opus-4-6*|*4-6-opus*)       GW_RATE_IN=5;  GW_RATE_OUT=25 ;;
+    *opus-4-7*|*4-7-opus*)       GW_RATE_IN=5;  GW_RATE_OUT=25 ;;
+    *opus-4-8*|*4-8-opus*)       GW_RATE_IN=5;  GW_RATE_OUT=25 ;;
+    *opus-5*|*5-opus*)           GW_RATE_IN=5;  GW_RATE_OUT=25 ;;
+    # Legacy sonnets bill a higher rate above 200K input tokens (6/22.50),
+    # so they are labeled "≤200k" rather than "flat".
+    *sonnet-4-5*|*4-5-sonnet*)   GW_RATE_IN=3;  GW_RATE_OUT=15; GW_RATE_SCOPE="≤200k" ;;
+    *sonnet-4-6*|*4-6-sonnet*)   GW_RATE_IN=3;  GW_RATE_OUT=15 ;;
+    *sonnet-5*|*5-sonnet*)       GW_RATE_IN=2;  GW_RATE_OUT=10 ;;
+    *sonnet-4*|*4-sonnet*)       GW_RATE_IN=3;  GW_RATE_OUT=15; GW_RATE_SCOPE="≤200k" ;;  # retired
+    *fable-5*|*5-fable*)         GW_RATE_IN=10; GW_RATE_OUT=50 ;;
+    *haiku-4-5*|*4-5-haiku*)     GW_RATE_IN=1;  GW_RATE_OUT=5 ;;
   esac
 fi
 
@@ -551,7 +557,7 @@ CTX_BAR="${BAR_COLOR}${BAR_FILL}${DIM}${BAR_EMPTY}${RESET}"
 # these numbers and why there's no more T1/T2 split.
 CTX_TIER=""
 if [[ "$AUTH_TAG" == GW:* ]] && [[ -n "$GW_RATE_IN" ]]; then
-  CTX_TIER="${PIPE}${DIM}\$${GW_RATE_IN}/\$${GW_RATE_OUT} flat${RESET}"
+  CTX_TIER="${PIPE}${DIM}\$${GW_RATE_IN}/\$${GW_RATE_OUT} ${GW_RATE_SCOPE}${RESET}"
 fi
 
 # ─── Cost display ─────────────────────────────────────────────────────────────
