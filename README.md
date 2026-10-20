@@ -68,7 +68,7 @@ Start a new Claude Code session — the statusline appears automatically.
 
 | Row | Contents |
 |---|---|
-| LOC | Auto-detected city, time, date, current weather |
+| LOC | City, time, date, current weather (see [Location and weather](#location-and-weather)) |
 | ENV | Claude Code version, auth method, active model |
 | CONTEXT | Context window fill bar, % used, cumulative token counts |
 | GIT | Project name, branch, ahead/behind remote, modified file count |
@@ -205,24 +205,55 @@ how close you are to the context limit:
 - `/compact` — summarizes conversation history in place. Convenient but can lose context or misrepresent what was discussed. Use with caution on complex tasks.
 - Safer pattern: ask Claude to write a summary of the current state to a markdown file, then run `/clear`, and open the new session by reading that file. You get a clean context with reliable continuity.
 
+## Location and weather
+
+Out of the box the statusline looks up nothing about where you are. The LOC row
+shows a placeholder until you tell it a location, in one of two ways, by putting
+lines in `~/.claude/statusline.env` (untracked, per machine; override the path
+with `STATUSLINE_CONFIG`):
+
+**A fixed location** (recommended). Only Open-Meteo is contacted, with these coordinates.
+
+```bash
+STATUSLINE_FALLBACK_CITY=Ithaca
+STATUSLINE_FALLBACK_LAT=42.44
+STATUSLINE_FALLBACK_LON=-76.50
+```
+
+**Look up your city from your IP.** Useful if you travel with a laptop. This sends
+your public IP to two more providers, so it is opt-in.
+
+```bash
+STATUSLINE_GEOLOCATE=1
+# Optional: if ipapi.co fails or rate-limits you, also try ip-api.com.
+# Its free tier is plain HTTP, so anyone on the network path can see the
+# request and forge the city it returns. Separate opt-in for that reason.
+STATUSLINE_GEO_ALLOW_HTTP=1
+```
+
+The fixed location still works with `STATUSLINE_GEOLOCATE=1`, as the fallback
+until the first lookup succeeds.
+
 ## Data sources
 
-- **Location:** [ipapi.co](https://ipapi.co) — free, HTTPS, no API key, cached 1 hour
-- **Weather:** [Open-Meteo](https://open-meteo.com) — free, no API key, cached 10 minutes
-- Both services must be reachable. If blocked by a Pi-hole or firewall, whitelist
-  `ipapi.co` and `api.open-meteo.com`
+- **Weather:** [Open-Meteo](https://open-meteo.com): free, HTTPS, no API key, cached 10 minutes
+- **IP lookup** (only with `STATUSLINE_GEOLOCATE=1`): [ipify](https://www.ipify.org) and
+  [ipapi.co](https://ipapi.co), both HTTPS, cached 1 hour and re-checked only when your IP changes
+- **HTTP fallback** (only with `STATUSLINE_GEO_ALLOW_HTTP=1` as well): [ip-api.com](https://ip-api.com)
+- If a Pi-hole or firewall blocks them, allow the hosts for the options you turned on.
 
 ## Privacy & trust
 
 Worth knowing before you install.
 
-**Third-party network calls.** Every status refresh sends cached requests (not every keystroke) to three providers:
+**Third-party network calls.** With no configuration, the statusline makes none. Each option in [Location and weather](#location-and-weather) adds providers, refreshed in the background on a cache (not every keystroke):
 
-- `api.ipify.org` returns your public IP
-- `ipapi.co` geolocates your IP to city and lat/lon
-- `api.open-meteo.com` returns current weather for those coordinates
+- `api.open-meteo.com` returns current weather for your coordinates (fixed location, or IP lookup)
+- `api.ipify.org` returns your public IP (IP lookup only)
+- `ipapi.co` turns your IP into a city and lat/lon (IP lookup only)
+- `ip-api.com`, over plain HTTP, as a fallback for `ipapi.co` (only with `STATUSLINE_GEO_ALLOW_HTTP=1`)
 
-None of these calls are authenticated. Nothing is sent to me or to any server I control. But those three providers can log your IP and approximate location. If that's not acceptable for your setup (corporate VPN, privacy-conscious workflow, etc.), either edit the script to remove the location and weather blocks or run it behind a filtering proxy.
+None of these calls are authenticated. Nothing is sent to me or to any server I control. But every provider you turn on can log your IP, and the IP lookup providers can log your approximate location. `tests/test_geolocation_optin.sh` runs the script with a fake `curl` and fails if any of these hosts is called without its opt-in.
 
 **Supply chain.** The script runs with your shell's privileges every time Claude Code refreshes the statusline. If this repository or my GitHub account is compromised, anyone who pulls updates or re-runs `setup.sh` gets the attacker's code executed automatically. The repo has no commit signing enforcement. To freeze what you're running, pin to a specific commit SHA:
 
@@ -233,4 +264,4 @@ git checkout <commit-sha>
 
 **Local writes.** Setup installs to `~/.claude/statusline.sh` and merges a `statusLine` key into `~/.claude/settings.json`, preserving other keys. Runtime writes go to `~/.cache/claude/statusline/`: location, weather, and git caches, plus `context_window_debug.log`, a rotating log capped at 200 lines containing short session IDs, token counts, and model names. Nothing leaves your machine through this log.
 
-**Non-risks.** Session JSON from Claude Code is shell-quoted via `jq @sh` before it is `eval`'d, and every numeric field is coerced to an integer before it reaches bash arithmetic. Both steps are needed: `@sh` protects the assignment, but `(( ))` is a second evaluator that would otherwise re-parse a safely-stored value as code. Values that arrive from outside Claude Code (the geolocation city, the project directory name, the git branch) additionally have control characters stripped before rendering, so they cannot emit terminal escape sequences. API keys, when present, are only rendered as their last 4 characters. The script doesn't call any network endpoint beyond the three listed above.
+**Non-risks.** Session JSON from Claude Code is shell-quoted via `jq @sh` before it is `eval`'d, and every numeric field is coerced to an integer before it reaches bash arithmetic. Both steps are needed: `@sh` protects the assignment, but `(( ))` is a second evaluator that would otherwise re-parse a safely-stored value as code. Values that arrive from outside Claude Code (the geolocation city, the project directory name, the git branch) additionally have control characters stripped before rendering, so they cannot emit terminal escape sequences. API keys, when present, are only rendered as their last 4 characters. The script doesn't call any network endpoint beyond the four listed above.

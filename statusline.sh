@@ -6,9 +6,18 @@
 # to define a fallback location used before the first successful geolocation, or
 # when the geolocation service is unavailable. No personal default is baked into
 # this script. Override the path with STATUSLINE_CONFIG.
+#
+# IP geolocation is OFF unless STATUSLINE_GEOLOCATE=1. Looking up a city by IP
+# sends your public IP to api.ipify.org and ipapi.co, which a stranger
+# installing a statusline would not expect, so it is opt-in. With it off,
+# weather still works from STATUSLINE_FALLBACK_LAT/_LON, and only open-meteo
+# is contacted. The plain-HTTP fallback provider (ip-api.com, whose free tier
+# has no HTTPS) needs a second opt-in, STATUSLINE_GEO_ALLOW_HTTP=1.
 # shellcheck source=/dev/null
 [[ -f "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" ]] && \
   source "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" 2>/dev/null
+GEOLOCATE=false
+[[ "${STATUSLINE_GEOLOCATE:-0}" == "1" ]] && GEOLOCATE=true
 #
 # ─── Background refresh mode ──────────────────────────────────────────────────
 # Invoked as `"$0" --refresh-location-weather` in a detached background process
@@ -44,12 +53,17 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
   echo $$ > "$LOCK_FILE"
   trap 'rm -f "$LOCK_FILE"' EXIT
 
-  CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+  CURRENT_IP=""
   CACHED_IP=""
-  [[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+  if [[ "$GEOLOCATE" == "true" ]]; then
+    CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+    [[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+  fi
 
   NEED_LOCATION=false
-  if [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" != "$CACHED_IP" ]]; then
+  if [[ "$GEOLOCATE" != "true" ]]; then
+    NEED_LOCATION=false                      # opted out: never geolocate
+  elif [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" != "$CACHED_IP" ]]; then
     NEED_LOCATION=true                       # IP changed -> always look up (and clear any backoff)
     rm -f "$FAIL_CACHE"
   elif [[ ! -f "$LOCATION_CACHE" ]]; then
@@ -74,8 +88,10 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
       RLAT=$(echo "$LOC_JSON" | jq -r '.latitude')
       RLON=$(echo "$LOC_JSON" | jq -r '.longitude')
       RCITY=$(echo "$LOC_JSON" | jq -r '.city')
-    else
-      # Provider 2 (fallback): ip-api.com (fields: .lat .lon .city; free tier is HTTP-only, ~45 req/min)
+    elif [[ "${STATUSLINE_GEO_ALLOW_HTTP:-0}" == "1" ]]; then
+      # Provider 2 (fallback, separate opt-in): ip-api.com (fields: .lat .lon
+      # .city; free tier is HTTP-only, ~45 req/min). Anyone on the network path
+      # can read the request and forge the reply, hence its own switch.
       LOC_JSON=$(curl -s "http://ip-api.com/json/" --max-time 4 2>/dev/null)
       if [[ -n "$LOC_JSON" ]] && [[ "$(echo "$LOC_JSON" | jq -r '.status // ""' 2>/dev/null)" == "success" ]]; then
         RLAT=$(echo "$LOC_JSON" | jq -r '.lat')
@@ -92,8 +108,10 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
       touch "$FAIL_CACHE"                     # both providers failed -> start/refresh backoff
     fi
   fi
-  # Use freshly-fetched coords if we got them, else fall back to whatever's cached.
-  if [[ -z "$RLAT" ]] && [[ -f "$LOCATION_CACHE" ]]; then
+  # Use freshly-fetched coords if we got them, else fall back to whatever's
+  # cached. A location cache left over from when geolocation was on is ignored
+  # once it is off, so the configured fallback wins instead of a stale city.
+  if [[ -z "$RLAT" ]] && [[ "$GEOLOCATE" == "true" ]] && [[ -f "$LOCATION_CACHE" ]]; then
     IFS='|' read -r RLAT RLON _ < "$LOCATION_CACHE"
   fi
   [[ -z "$RLAT" ]] && RLAT="${STATUSLINE_FALLBACK_LAT:-}" && RLON="${STATUSLINE_FALLBACK_LON:-}"
@@ -406,7 +424,7 @@ WEATHER_CACHE="${CACHE_DIR}/weather"
 # STATUSLINE_FALLBACK_LAT/_LON itself. Discarding the first two fields here
 # rather than binding dead names keeps this honest about what the render path
 # actually uses.
-if [[ -f "$LOCATION_CACHE" ]]; then
+if [[ "$GEOLOCATE" == "true" ]] && [[ -f "$LOCATION_CACHE" ]]; then
   IFS='|' read -r _ _ WX_CITY < "$LOCATION_CACHE"
 else
   # No cache yet. Fall back to a configured city if set, else a neutral
@@ -428,7 +446,13 @@ fi
 # Kick a background refresh if either cache is stale/missing. The refresher
 # guards itself with a lock file (see --refresh-location-weather mode above),
 # so it's safe to fire this on every render without piling up processes.
-if ! cache_fresh "$LOCATION_CACHE" 3600 || ! cache_fresh "$WEATHER_CACHE" 600; then
+# With geolocation off the location cache never refreshes, so only weather
+# staleness counts, and with no fallback coordinates there is nothing to fetch.
+if [[ "$GEOLOCATE" == "true" ]]; then
+  if ! cache_fresh "$LOCATION_CACHE" 3600 || ! cache_fresh "$WEATHER_CACHE" 600; then
+    ( "$0" --refresh-location-weather >/dev/null 2>&1 & disown ) 2>/dev/null
+  fi
+elif [[ -n "${STATUSLINE_FALLBACK_LAT:-}" ]] && ! cache_fresh "$WEATHER_CACHE" 600; then
   ( "$0" --refresh-location-weather >/dev/null 2>&1 & disown ) 2>/dev/null
 fi
 
