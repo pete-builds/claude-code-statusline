@@ -75,6 +75,15 @@ env -i PATH="$WORK/bin:$PATH" HOME="$H" STATUSLINE_CONFIG="$CFG" CURL_LOG="$WORK
   bash "$SCRIPT" --refresh-location-weather
 check cityonly "hosts contacted" "$(hosts cityonly)" ""
 
+# 3b. City only must show NO weather, even with a cached reading on disk.
+echo "1|50|48|5" > "$H/.cache/claude/statusline/weather"
+touch "$H/.cache/claude/statusline/weather"
+out=$(printf '%s' '{"model":{"display_name":"Opus 5"}}' \
+  | env -i PATH="$WORK/bin:$PATH" HOME="$H" STATUSLINE_CONFIG="$CFG" CURL_LOG="$WORK/log-cityonly" \
+    bash "$SCRIPT" 2>&1 | sed "s/$ESC\[[0-9;]*m//g" | grep -a 'LOC:')
+case "$out" in *"50°F"*|*"5mph"*) ok=yes ;; *) ok=no ;; esac; check cityonly "stale weather hidden" "$ok" "no"
+case "$out" in *Cityonly*) ok=yes ;; *) ok=no ;; esac; check cityonly "city still shown" "$ok" "yes"
+
 # 4. Invalid coordinates (out of range, or carrying URL characters) are ignored
 #    and never reach a URL, city still honoured.
 mk_home bad 'STATUSLINE_HOME_CITY=Badcoords

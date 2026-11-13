@@ -41,9 +41,17 @@ run_case() {
   # Fresh caches so the background refresher never fires.
   echo "0|0|Testville" > "$home/.cache/claude/statusline/location"
   echo "1|50|48|5" > "$home/.cache/claude/statusline/weather"
-  if [ "$seat" != "noseat" ]; then
-    printf '{"oauthAccount":{"seatTier":"%s"}}' "$seat" > "$home/.claude.json"
-  fi
+  case "$seat" in
+    noseat) ;;
+    cfg:*|cfgempty)
+      # Seat lives in CLAUDE_CONFIG_DIR; ~/.claude.json holds a decoy "max" that
+      # must be ignored when the variable is set.
+      printf '{"oauthAccount":{"seatTier":"max"}}' > "$home/.claude.json"
+      mkdir -p "$home/cfg"
+      [ "$seat" = cfgempty ] || printf '{"oauthAccount":{"seatTier":"%s"}}' "${seat#cfg:}" > "$home/cfg/.claude.json"
+      set -- "$@" "CLAUDE_CONFIG_DIR=$home/cfg" ;;
+    *) printf '{"oauthAccount":{"seatTier":"%s"}}' "$seat" > "$home/.claude.json" ;;
+  esac
   local out env_row session_row got_label got_cost
   out=$(env -i PATH="$WORK/bin:$PATH" HOME="$home" STATUSLINE_CONFIG=/dev/null \
           CURL_LOG="$CURL_LOG" "$@" bash "$SCRIPT" < "$FIX/$fixture.json" 2>&1 \
@@ -82,6 +90,17 @@ echo "== no cost yet / team seat =="
 run_case no-cost-yet                no_cost    noseat "OAuth"          none
 run_case no-cost-with-key-env       no_cost    noseat "API:..1234"     '$0.0000' ANTHROPIC_API_KEY=sk-ant-test-abcd1234
 run_case team-seat-no-rate-limits   api_key    team_standard "OAuth·Team" none
+
+echo "== Bedrock, Vertex, Foundry: never labelled API =="
+run_case bedrock                    api_key noseat "Bedrock" '~$0.4321 est' CLAUDE_CODE_USE_BEDROCK=1
+run_case vertex                     api_key noseat "Vertex"  '~$0.4321 est' CLAUDE_CODE_USE_VERTEX=1
+run_case foundry                    api_key noseat "Foundry" '~$0.4321 est' CLAUDE_CODE_USE_FOUNDRY=1
+run_case bedrock-with-key-env       api_key noseat "Bedrock" '~$0.4321 est' CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_API_KEY=sk-ant-test-abcd1234
+run_case bedrock-flag-off           api_key noseat "API"     '$0.4321' CLAUDE_CODE_USE_BEDROCK=0
+
+echo "== CLAUDE_CONFIG_DIR decides where the seat is read =="
+run_case configdir-team-seat        api_key cfg:team_standard "OAuth·Team" none
+run_case configdir-no-seat          api_key cfgempty "API" '$0.4321'
 
 if [ -s "$CURL_LOG" ]; then
   echo "FAIL: network was called:"; sed 's/^/    /' "$CURL_LOG"; fail=1

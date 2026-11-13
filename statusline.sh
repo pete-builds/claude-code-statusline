@@ -301,19 +301,35 @@ PROJ_NAME="$(strip_ctl "$PROJ_NAME")"
 #   3. rate_limits.five_hour or .seven_day present
 #                                        -> subscriber (documented: only Pro,
 #                                           Max and Ultra get these windows)
+#   3b. CLAUDE_CODE_USE_BEDROCK / _VERTEX / _FOUNDRY / _MANTLE / _ANTHROPIC_AWS set
+#                                        -> provider label (Bedrock, Vertex, ...), never "API"
 #   4. ANTHROPIC_API_KEY set             -> API key (unchanged: API:..xxxx)
 #   5. nothing above, cost.total_cost_usd > 0 and no subscription seat recorded
-#      in ~/.claude.json                 -> API key, inferred (label "API")
+#      in .claude.json                  -> API key, inferred (label "API")
 #   6. otherwise                         -> subscriber (unchanged: OAuth)
 #
 # Limits, stated plainly. rate_limits appears only after the first API response,
 # so a brand new session is labelled OAuth until then. Team and Enterprise seats
-# get no rate_limits, which is why step 5 checks ~/.claude.json for a seat tier
+# get no rate_limits, which is why step 5 checks .claude.json for a seat tier
 # before calling a cost-bearing session API-key. cost.total_cost_usd is a
 # client-side list-price estimate that every session carries, subscribers
 # included, so cost alone never decides anything.
 GW_HOST=""
 SEAT_TIER=""
+# Claude Code keeps .claude.json inside CLAUDE_CONFIG_DIR when that is set
+# (https://code.claude.com/docs/en/claude-directory), else at ~/.claude.json.
+CLAUDE_JSON="$HOME/.claude.json"
+[[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && CLAUDE_JSON="${CLAUDE_CONFIG_DIR%/}/.claude.json"
+# Cloud-provider sessions (documented variable names, env-vars page): Bedrock,
+# Vertex, Foundry, Bedrock Mantle, Claude Platform on AWS. Not Anthropic API keys.
+_truthy() { [[ -n "${1:-}" && "$1" != "0" && "$1" != "false" ]]; }
+PROVIDER_TAG=""
+if   _truthy "${CLAUDE_CODE_USE_BEDROCK:-}";       then PROVIDER_TAG="Bedrock"
+elif _truthy "${CLAUDE_CODE_USE_VERTEX:-}";        then PROVIDER_TAG="Vertex"
+elif _truthy "${CLAUDE_CODE_USE_FOUNDRY:-}";       then PROVIDER_TAG="Foundry"
+elif _truthy "${CLAUDE_CODE_USE_MANTLE:-}";        then PROVIDER_TAG="Mantle"
+elif _truthy "${CLAUDE_CODE_USE_ANTHROPIC_AWS:-}"; then PROVIDER_TAG="AWS"
+fi
 if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
   GW_HOST=$(echo "$ANTHROPIC_BASE_URL" | sed -E 's|https?://||; s|/.*||' | awk -F. '{print $(NF-1)}')
   AUTH_TAG="GW:${GW_HOST}"
@@ -328,14 +344,16 @@ elif [[ "$RL_SPEND_PRESENT" == "true" ]]; then
   AUTH_TAG="GW"
 elif [[ "$RL_SUB_PRESENT" == "true" ]]; then
   AUTH_TAG="OAuth"
+elif [[ -n "$PROVIDER_TAG" ]]; then
+  AUTH_TAG="$PROVIDER_TAG"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   AUTH_TAG="API:..${ANTHROPIC_API_KEY: -4}"
 else
   AUTH_TAG="OAuth"
   # `awk` does the comparison: COST arrives as text and must never reach (( )).
   if awk -v c="$COST" 'BEGIN { exit !(c + 0 > 0) }'; then
-    [[ -f "$HOME/.claude.json" ]] && \
-      SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$HOME/.claude.json" 2>/dev/null)
+    [[ -f "$CLAUDE_JSON" ]] && \
+      SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$CLAUDE_JSON" 2>/dev/null)
     [[ -z "$SEAT_TIER" ]] && AUTH_TAG="API"
   fi
 fi
@@ -344,8 +362,8 @@ fi
 # Reads oauthAccount.seatTier from ~/.claude.json so the bar shows Pro/Max/Team,
 # not just "OAuth". Local file read only, no network. Unknown tiers fall through
 # to the raw value with underscores spaced out.
-if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$HOME/.claude.json" ]]; then
-  [[ -z "$SEAT_TIER" ]] && SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$HOME/.claude.json" 2>/dev/null)
+if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$CLAUDE_JSON" ]]; then
+  [[ -z "$SEAT_TIER" ]] && SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$CLAUDE_JSON" 2>/dev/null)
   case "$SEAT_TIER" in
     team_standard) PLAN_TAG="Team" ;;
     team_premium)  PLAN_TAG="Team+" ;;
@@ -481,7 +499,9 @@ WX_CITY="$(strip_ctl "$WX_CITY")"
 # for day/night). FEEL is discarded positionally: the refresher still caches
 # apparent temperature, but the rendered LOC row shows only TEMP and WIND, so
 # binding a name for it would assert a use that does not exist.
-if [[ -f "$WEATHER_CACHE" ]]; then
+# City-only home location has no coordinates, so any cached reading belongs to
+# some other place or time: show the placeholder, never a stale number.
+if [[ -f "$WEATHER_CACHE" ]] && ! { [[ "$HOME_SET" == "true" ]] && [[ -z "$HOME_LAT" ]]; }; then
   IFS='|' read -r WX_CODE WX_TEMP _ WX_WIND < "$WEATHER_CACHE"
 else
   WX_CODE="-1"; WX_TEMP="…"; WX_WIND="…"
@@ -638,7 +658,7 @@ fi
 # Decided from AUTH_TAG, which is decided from the session JSON (see Auth
 # detection), not from whether ANTHROPIC_API_KEY happens to be in our env.
 COST_PART=""
-if [[ "$AUTH_TAG" == GW:* ]] || [[ "$AUTH_TAG" == "GW" ]]; then
+if [[ "$AUTH_TAG" == GW:* ]] || [[ "$AUTH_TAG" == "GW" ]] || [[ -n "$PROVIDER_TAG" && "$AUTH_TAG" == "$PROVIDER_TAG" ]]; then
   COST_PART="${PIPE}${BYELLOW}~$(printf '$%.4f' "$COST") est${RESET}"
 elif [[ "$AUTH_TAG" == API:* ]] || [[ "$AUTH_TAG" == "API" ]]; then
   COST_PART="${PIPE}${BMAGENTA}$(printf '$%.4f' "$COST")${RESET}"
