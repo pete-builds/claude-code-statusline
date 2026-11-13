@@ -76,11 +76,39 @@ Start a new Claude Code session — the statusline appears automatically.
 
 ### Auth display
 
-| Label | Meaning |
-|---|---|
-| `OAuth` | Logged in via Anthropic account (Pro or Max subscription) |
-| `API:..xxxx` | Direct Anthropic API key (last 4 chars) |
-| `GW:hostname` | API gateway (last 4 chars of key, gateway hostname shown) |
+Claude Code does not tell the status line how you signed in, and it does not
+reliably hand over your environment variables. So the label is decided from the
+session data Claude Code does send (the `rate_limits` and `cost` fields), and
+environment variables are only a fallback. First match wins:
+
+| Label | Cost on SESSION row | How it is detected |
+|---|---|---|
+| `GW:hostname` | `~$x.xxxx est` | `ANTHROPIC_BASE_URL` is set (a gateway, such as a university one) |
+| `GW` | `~$x.xxxx est` | The session reports a gateway `rate_limits.spend_limit` |
+| `OAuth`, or `OAuth·Max`, `OAuth·Pro`, `OAuth·Team` | none (your plan covers it) | The session reports `rate_limits.five_hour` or `seven_day`, which only Pro, Max and Ultra subscribers get. The plan name comes from `.claude.json` when present |
+| `Bedrock`, `Vertex`, `Foundry`, `Mantle`, `AWS` | `~$x.xxxx est` | `CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, `_MANTLE` or `_ANTHROPIC_AWS` is set (and no subscriber or gateway signal). These are cloud-provider sessions, not Anthropic API keys, so they are never labelled `API` |
+| `API:..xxxx` | `$x.xxxx` | `ANTHROPIC_API_KEY` is set (last 4 characters shown) |
+| `API` | `$x.xxxx` | None of the above, the session has a nonzero cost, and `.claude.json` records no subscription seat: treated as an API key |
+| `OAuth` | none | Nothing else matched, for example a session with no cost yet |
+
+`.claude.json` is read from `$CLAUDE_CONFIG_DIR/.claude.json` when `CLAUDE_CONFIG_DIR`
+is set (as Claude Code does), otherwise from `~/.claude.json`.
+
+What changed from the previous version, plainly. These sessions are labelled
+differently now: a subscriber who also has `ANTHROPIC_API_KEY` exported used to
+show `API:..xxxx` with a cost and now shows `OAuth` with none (the session
+reports subscriber rate limits, so the key is not the one in use); a session
+reporting a gateway spend limit shows `GW` with an estimated cost instead of
+`OAuth`; an API-key user whose variable is not passed shows `API` with a cost
+instead of `OAuth`; and Bedrock, Vertex, Foundry, Mantle and AWS sessions show
+their provider with an estimated cost instead of `OAuth`. Everyone else sees what
+they saw before.
+
+Known limits: `rate_limits` only appears after the first reply in a session, so
+an API-key session shows `OAuth` until it has spent something. Team and
+Enterprise seats get no `rate_limits`, so they are recognised by the seat in
+`~/.claude.json` instead. The cost Claude Code reports is a list-price estimate
+and every session carries one, so cost alone never decides the label.
 
 ### Labeling gateway keys
 
@@ -204,6 +232,31 @@ how close you are to the context limit:
 
 - `/compact` — summarizes conversation history in place. Convenient but can lose context or misrepresent what was discussed. Use with caution on complex tasks.
 - Safer pattern: ask Claude to write a summary of the current state to a markdown file, then run `/clear`, and open the new session by reading that file. You get a clean context with reliable continuity.
+
+## Home location
+
+The LOC row finds your city by IP address, which is sometimes wrong at city
+level. To skip that entirely, set a home location in `~/.claude/statusline.env`
+(a plain shell file the script reads on every run; override the path with
+`STATUSLINE_CONFIG`):
+
+```bash
+STATUSLINE_HOME_CITY=Ithaca
+STATUSLINE_HOME_LAT=42.44
+STATUSLINE_HOME_LON=-76.50
+```
+
+With a home location set, the statusline uses it instead of any lookup. It never
+contacts ipify or ipapi.co, never reads or writes the cached city, and the only
+network call left is the weather request to Open-Meteo for those coordinates.
+Latitude and longitude are decimal degrees; anything that is not a plain number
+in range is ignored. `STATUSLINE_HOME_CITY` on its own shows the city and
+placeholders in place of weather (any cached reading is ignored), with no lookups at all. No location tool is needed: the optional
+macOS `CoreLocationCLI` is not used by this script, so there is no Gatekeeper
+prompt to clear.
+
+`STATUSLINE_FALLBACK_CITY`, `_LAT` and `_LON` still mean something different:
+they are only used until the first IP lookup succeeds, and the lookup wins after.
 
 ## Data sources
 

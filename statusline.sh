@@ -10,6 +10,21 @@
 [[ -f "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" ]] && \
   source "${STATUSLINE_CONFIG:-$HOME/.claude/statusline.env}" 2>/dev/null
 #
+# Home location: STATUSLINE_HOME_CITY plus STATUSLINE_HOME_LAT / _LON (decimal
+# degrees). When set it is used INSTEAD of any lookup: no IP geolocation, no
+# location cache, nothing about where you are leaves the machine except the
+# coordinates sent to open-meteo for weather. City alone is allowed (no weather).
+# Coordinates that are not valid decimal degrees are ignored, not fatal.
+HOME_LAT=""; HOME_LON=""
+_is_coord() { # _is_coord VALUE MAX -> true if VALUE is a decimal number within +/-MAX
+  [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] && awk -v v="$1" -v m="$2" 'BEGIN { exit !(v + 0 >= -m && v + 0 <= m) }'
+}
+if _is_coord "${STATUSLINE_HOME_LAT:-}" 90 && _is_coord "${STATUSLINE_HOME_LON:-}" 180; then
+  HOME_LAT="$STATUSLINE_HOME_LAT"; HOME_LON="$STATUSLINE_HOME_LON"
+fi
+HOME_SET=false
+[[ -n "$HOME_LAT" || -n "${STATUSLINE_HOME_CITY:-}" ]] && HOME_SET=true
+#
 # ─── Background refresh mode ──────────────────────────────────────────────────
 # Invoked as `"$0" --refresh-location-weather` in a detached background process
 # by the main render path below. Does the blocking network calls (ipify, ipapi,
@@ -44,12 +59,17 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
   echo $$ > "$LOCK_FILE"
   trap 'rm -f "$LOCK_FILE"' EXIT
 
-  CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+  CURRENT_IP=""
   CACHED_IP=""
-  [[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+  if [[ "$HOME_SET" != "true" ]]; then
+    CURRENT_IP=$(curl -s "https://api.ipify.org" --max-time 2 2>/dev/null || echo "")
+    [[ -f "$IP_CACHE" ]] && CACHED_IP=$(cat "$IP_CACHE" 2>/dev/null || echo "")
+  fi
 
   NEED_LOCATION=false
-  if [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" != "$CACHED_IP" ]]; then
+  if [[ "$HOME_SET" == "true" ]]; then
+    NEED_LOCATION=false                      # home location configured: never look one up
+  elif [[ -n "$CURRENT_IP" ]] && [[ "$CURRENT_IP" != "$CACHED_IP" ]]; then
     NEED_LOCATION=true                       # IP changed -> always look up (and clear any backoff)
     rm -f "$FAIL_CACHE"
   elif [[ ! -f "$LOCATION_CACHE" ]]; then
@@ -93,7 +113,10 @@ if [[ "${1:-}" == "--refresh-location-weather" ]]; then
     fi
   fi
   # Use freshly-fetched coords if we got them, else fall back to whatever's cached.
-  if [[ -z "$RLAT" ]] && [[ -f "$LOCATION_CACHE" ]]; then
+  # A configured home location outranks both, and ignores the cache entirely.
+  if [[ -n "$HOME_LAT" ]]; then
+    RLAT="$HOME_LAT"; RLON="$HOME_LON"
+  elif [[ "$HOME_SET" != "true" ]] && [[ -z "$RLAT" ]] && [[ -f "$LOCATION_CACHE" ]]; then
     IFS='|' read -r RLAT RLON _ < "$LOCATION_CACHE"
   fi
   [[ -z "$RLAT" ]] && RLAT="${STATUSLINE_FALLBACK_LAT:-}" && RLON="${STATUSLINE_FALLBACK_LON:-}"
@@ -157,6 +180,8 @@ eval "$(echo "$INPUT" | jq -r '
   @sh "RL_5H_RESETS=\(.rate_limits.five_hour.resets_at // "")",
   @sh "RL_7D_PCT=\(.rate_limits.seven_day.used_percentage // "")",
   @sh "RL_7D_RESETS=\(.rate_limits.seven_day.resets_at // "")",
+  @sh "RL_SUB_PRESENT=\(if (.rate_limits.five_hour != null) or (.rate_limits.seven_day != null) then "true" else "false" end)",
+  @sh "RL_SPEND_PRESENT=\(if .rate_limits.spend_limit != null then "true" else "false" end)",
   @sh "VIM_MODE=\(.vim.mode // "")",
   @sh "AGENT_NAME=\(.agent.name // "")",
   @sh "WORKTREE_NAME=\(.worktree.name // "")",
@@ -264,6 +289,47 @@ PROJ_NAME=$(basename "${WORK_DIR:-unknown}")
 PROJ_NAME="$(strip_ctl "$PROJ_NAME")"
 
 # ─── Auth detection ──────────────────────────────────────────────────────────
+# Claude Code does not tell the status line how you signed in: the session JSON
+# has no auth or plan field (https://code.claude.com/docs/en/statusline, "Available
+# data"), and it does not reliably pass ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
+# into this process (issue #4). So the decision is made from what the JSON does
+# document, with the environment as a fallback:
+#
+#   1. ANTHROPIC_BASE_URL set            -> gateway (unchanged: GW:host)
+#   2. rate_limits.spend_limit present   -> gateway (documented: only behind a
+#                                           Claude apps gateway with a spend limit)
+#   3. rate_limits.five_hour or .seven_day present
+#                                        -> subscriber (documented: only Pro,
+#                                           Max and Ultra get these windows)
+#   3b. CLAUDE_CODE_USE_BEDROCK / _VERTEX / _FOUNDRY / _MANTLE / _ANTHROPIC_AWS set
+#                                        -> provider label (Bedrock, Vertex, ...), never "API"
+#   4. ANTHROPIC_API_KEY set             -> API key (unchanged: API:..xxxx)
+#   5. nothing above, cost.total_cost_usd > 0 and no subscription seat recorded
+#      in .claude.json                  -> API key, inferred (label "API")
+#   6. otherwise                         -> subscriber (unchanged: OAuth)
+#
+# Limits, stated plainly. rate_limits appears only after the first API response,
+# so a brand new session is labelled OAuth until then. Team and Enterprise seats
+# get no rate_limits, which is why step 5 checks .claude.json for a seat tier
+# before calling a cost-bearing session API-key. cost.total_cost_usd is a
+# client-side list-price estimate that every session carries, subscribers
+# included, so cost alone never decides anything.
+GW_HOST=""
+SEAT_TIER=""
+# Claude Code keeps .claude.json inside CLAUDE_CONFIG_DIR when that is set
+# (https://code.claude.com/docs/en/claude-directory), else at ~/.claude.json.
+CLAUDE_JSON="$HOME/.claude.json"
+[[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && CLAUDE_JSON="${CLAUDE_CONFIG_DIR%/}/.claude.json"
+# Cloud-provider sessions (documented variable names, env-vars page): Bedrock,
+# Vertex, Foundry, Bedrock Mantle, Claude Platform on AWS. Not Anthropic API keys.
+_truthy() { [[ -n "${1:-}" && "$1" != "0" && "$1" != "false" ]]; }
+PROVIDER_TAG=""
+if   _truthy "${CLAUDE_CODE_USE_BEDROCK:-}";       then PROVIDER_TAG="Bedrock"
+elif _truthy "${CLAUDE_CODE_USE_VERTEX:-}";        then PROVIDER_TAG="Vertex"
+elif _truthy "${CLAUDE_CODE_USE_FOUNDRY:-}";       then PROVIDER_TAG="Foundry"
+elif _truthy "${CLAUDE_CODE_USE_MANTLE:-}";        then PROVIDER_TAG="Mantle"
+elif _truthy "${CLAUDE_CODE_USE_ANTHROPIC_AWS:-}"; then PROVIDER_TAG="AWS"
+fi
 if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
   GW_HOST=$(echo "$ANTHROPIC_BASE_URL" | sed -E 's|https?://||; s|/.*||' | awk -F. '{print $(NF-1)}')
   AUTH_TAG="GW:${GW_HOST}"
@@ -274,18 +340,30 @@ if [[ -n "${ANTHROPIC_BASE_URL:-}" ]]; then
   if [[ -n "${ANTHROPIC_KEY_LABEL:-}" ]]; then
     AUTH_TAG+="·${ANTHROPIC_KEY_LABEL:0:16}"
   fi
+elif [[ "$RL_SPEND_PRESENT" == "true" ]]; then
+  AUTH_TAG="GW"
+elif [[ "$RL_SUB_PRESENT" == "true" ]]; then
+  AUTH_TAG="OAuth"
+elif [[ -n "$PROVIDER_TAG" ]]; then
+  AUTH_TAG="$PROVIDER_TAG"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   AUTH_TAG="API:..${ANTHROPIC_API_KEY: -4}"
 else
   AUTH_TAG="OAuth"
+  # `awk` does the comparison: COST arrives as text and must never reach (( )).
+  if awk -v c="$COST" 'BEGIN { exit !(c + 0 > 0) }'; then
+    [[ -f "$CLAUDE_JSON" ]] && \
+      SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$CLAUDE_JSON" 2>/dev/null)
+    [[ -z "$SEAT_TIER" ]] && AUTH_TAG="API"
+  fi
 fi
 
 # ─── Plan/seat tier (subscription sessions) ──────────────────────────────────
 # Reads oauthAccount.seatTier from ~/.claude.json so the bar shows Pro/Max/Team,
 # not just "OAuth". Local file read only, no network. Unknown tiers fall through
 # to the raw value with underscores spaced out.
-if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$HOME/.claude.json" ]]; then
-  SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$HOME/.claude.json" 2>/dev/null)
+if [[ "$AUTH_TAG" == "OAuth" ]] && [[ -f "$CLAUDE_JSON" ]]; then
+  [[ -z "$SEAT_TIER" ]] && SEAT_TIER=$(jq -r '.oauthAccount.seatTier // empty' "$CLAUDE_JSON" 2>/dev/null)
   case "$SEAT_TIER" in
     team_standard) PLAN_TAG="Team" ;;
     team_premium)  PLAN_TAG="Team+" ;;
@@ -406,7 +484,9 @@ WEATHER_CACHE="${CACHE_DIR}/weather"
 # STATUSLINE_FALLBACK_LAT/_LON itself. Discarding the first two fields here
 # rather than binding dead names keeps this honest about what the render path
 # actually uses.
-if [[ -f "$LOCATION_CACHE" ]]; then
+if [[ "$HOME_SET" == "true" ]]; then
+  WX_CITY="${STATUSLINE_HOME_CITY:-…}"        # configured home beats any cached lookup
+elif [[ -f "$LOCATION_CACHE" ]]; then
   IFS='|' read -r _ _ WX_CITY < "$LOCATION_CACHE"
 else
   # No cache yet. Fall back to a configured city if set, else a neutral
@@ -419,7 +499,9 @@ WX_CITY="$(strip_ctl "$WX_CITY")"
 # for day/night). FEEL is discarded positionally: the refresher still caches
 # apparent temperature, but the rendered LOC row shows only TEMP and WIND, so
 # binding a name for it would assert a use that does not exist.
-if [[ -f "$WEATHER_CACHE" ]]; then
+# City-only home location has no coordinates, so any cached reading belongs to
+# some other place or time: show the placeholder, never a stale number.
+if [[ -f "$WEATHER_CACHE" ]] && ! { [[ "$HOME_SET" == "true" ]] && [[ -z "$HOME_LAT" ]]; }; then
   IFS='|' read -r WX_CODE WX_TEMP _ WX_WIND < "$WEATHER_CACHE"
 else
   WX_CODE="-1"; WX_TEMP="…"; WX_WIND="…"
@@ -428,7 +510,13 @@ fi
 # Kick a background refresh if either cache is stale/missing. The refresher
 # guards itself with a lock file (see --refresh-location-weather mode above),
 # so it's safe to fire this on every render without piling up processes.
-if ! cache_fresh "$LOCATION_CACHE" 3600 || ! cache_fresh "$WEATHER_CACHE" 600; then
+# With a home location only weather can go stale, and only if there are
+# coordinates to fetch it for.
+if [[ "$HOME_SET" == "true" ]]; then
+  if [[ -n "$HOME_LAT" ]] && ! cache_fresh "$WEATHER_CACHE" 600; then
+    ( "$0" --refresh-location-weather >/dev/null 2>&1 & disown ) 2>/dev/null
+  fi
+elif ! cache_fresh "$LOCATION_CACHE" 3600 || ! cache_fresh "$WEATHER_CACHE" 600; then
   ( "$0" --refresh-location-weather >/dev/null 2>&1 & disown ) 2>/dev/null
 fi
 
@@ -565,11 +653,14 @@ fi
 # Cornell gateway (GW:*): show as estimate (~$) in yellow — Claude Code still calculates
 #   cost client-side using Anthropic rates, but actual Cornell charge is cloud vendor
 #   pass-through + $0.002/request surcharge. Value is directionally useful, not exact.
-# No ANTHROPIC_API_KEY (Max/OAuth): no cost field available, show nothing.
+# Subscriber (OAuth*): the cost in the JSON is a list-price estimate of usage
+#   the plan already covers, not a charge, so show nothing.
+# Decided from AUTH_TAG, which is decided from the session JSON (see Auth
+# detection), not from whether ANTHROPIC_API_KEY happens to be in our env.
 COST_PART=""
-if [[ "$AUTH_TAG" == GW:* ]]; then
+if [[ "$AUTH_TAG" == GW:* ]] || [[ "$AUTH_TAG" == "GW" ]] || [[ -n "$PROVIDER_TAG" && "$AUTH_TAG" == "$PROVIDER_TAG" ]]; then
   COST_PART="${PIPE}${BYELLOW}~$(printf '$%.4f' "$COST") est${RESET}"
-elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+elif [[ "$AUTH_TAG" == API:* ]] || [[ "$AUTH_TAG" == "API" ]]; then
   COST_PART="${PIPE}${BMAGENTA}$(printf '$%.4f' "$COST")${RESET}"
 fi
 
